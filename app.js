@@ -141,7 +141,8 @@ function renderShell(){
         <button data-route="assignments">Instrumen Saya</button>
         ${admin?`<button data-route="dashboard">Dashboard</button>
         <button data-route="staff">Guru</button>
-        <button data-route="adminAssignments">Tugasan</button>
+        <button data-route="bundles">Bundle Peranan</button>
+        <button data-route="adminAssignments">Tugasan Manual</button>
         <button data-route="submissions">Hantaran</button>
         <button data-route="settings">Tahun / Tetapan</button>`:''}
         <button id="logoutBtn">Log Keluar</button>
@@ -167,6 +168,7 @@ function go(route){
   if(route==='dashboard') return viewDashboard();
   if(route==='assignments') return viewAssignments();
   if(route==='staff') return viewStaff();
+  if(route==='bundles') return viewBundles();
   if(route==='adminAssignments') return viewAdminAssignments();
   if(route==='submissions') return viewSubmissions();
   if(route==='settings') return viewSettings();
@@ -402,6 +404,65 @@ function staffModal(s){
     if(!out.ok){toast(out.message||out.error);return}
     closeModal(); toast('Guru disimpan.'); viewStaff();
   };
+}
+
+async function viewBundles(){
+  title('Tetapan Bundle Peranan');
+  $('#view').innerHTML=`<div class="card loading-card"><div class="spinner"></div><b>Memuatkan bundle…</b></div>`;
+  const out=await get('bundles');
+  if(!out.ok){toast(out.message||out.error||'Gagal memuat bundle.');return}
+  state.bundleAdmin={bundles:out.bundles||[],staff:out.staff||[],instruments:out.instruments||[]};
+  const first=state.bundleAdmin.bundles.find(b=>b.bundle_id==='BUNDLE-KETUA-PANITIA')||state.bundleAdmin.bundles[0]||null;
+  renderBundleAdmin(first?.bundle_id||'NEW');
+}
+
+function renderBundleAdmin(selectedId){
+  const data=state.bundleAdmin;if(!data)return;
+  const {bundles,staff,instruments}=data;
+  const isNew=selectedId==='NEW';
+  const bundle=isNew?{bundle_id:'',nama_bundle:'',keterangan:'',aktif:true,carry_forward:true,member_ids:[],instrument_ids:[]}:(bundles.find(b=>b.bundle_id===selectedId)||bundles[0]);
+  const selectedMembers=new Set(bundle.member_ids||[]), selectedInstruments=new Set(bundle.instrument_ids||[]);
+  $('#view').innerHTML=`
+  <div class="bundle-layout">
+    <div class="card bundle-side">
+      <div class="section-title" style="margin-top:0"><h2>Bundle</h2><button class="btn btn-primary" id="newBundle">+ Baru</button></div>
+      <div class="bundle-list">${bundles.map(b=>`<button class="bundle-choice ${b.bundle_id===bundle.bundle_id?'active':''}" data-bundle="${esc(b.bundle_id)}"><b>${esc(b.nama_bundle)}</b><small>${(b.member_ids||[]).length} guru · ${(b.instrument_ids||[]).length} instrumen</small></button>`).join('')}</div>
+    </div>
+    <div class="stack">
+      <div class="card">
+        <div class="section-title" style="margin-top:0"><h2>${isNew?'Bundle Baharu':esc(bundle.nama_bundle)}</h2>${!isNew&&bundle.bundle_id!=='BUNDLE-ALL-GURU'?`<button class="btn btn-danger" id="deactivateBundle">Nyahaktif</button>`:''}</div>
+        <div class="form-row"><div><label>Nama Bundle</label><input id="bundleName" value="${esc(bundle.nama_bundle||'')}" placeholder="Contoh: KETUA PANITIA"></div><div><label>Keterangan</label><input id="bundleDesc" value="${esc(bundle.keterangan||'')}" placeholder="Keterangan ringkas"></div></div>
+        <div class="toolbar" style="margin-top:12px"><label class="inline-check"><input id="bundleActive" type="checkbox" ${bundle.aktif!==false?'checked':''}> Aktif</label><label class="inline-check"><input id="bundleCarry" type="checkbox" ${bundle.carry_forward!==false?'checked':''}> Bawa ke tahun baharu</label></div>
+      </div>
+      <div class="card">
+        <div class="section-title" style="margin-top:0"><h2>Instrumen Dalam Bundle</h2><span class="muted">Tick instrumen untuk peranan ini</span></div>
+        <div class="instrument-grid">${instruments.map(i=>`<label class="check-card"><input type="checkbox" class="bundle-inst" value="${esc(i.instrument_id)}" ${selectedInstruments.has(i.instrument_id)?'checked':''}><span><b>${esc(i.modul)} · Lampiran ${esc(i.lampiran)}</b><small>${esc(i.sasaran_role||'')}</small></span></label>`).join('')}</div>
+      </div>
+      <div class="card">
+        <div class="section-title" style="margin-top:0"><h2>Pilih Guru</h2><span id="memberCount" class="badge">${selectedMembers.size} dipilih</span></div>
+        <div class="toolbar"><input id="teacherSearch" placeholder="Cari nama guru…" style="max-width:320px"><button class="btn btn-light" id="selectAllVisible">Pilih Semua</button><button class="btn btn-light" id="clearAll">Kosongkan Semua</button></div>
+        <div class="teacher-check-list" id="teacherList">${staff.map(s=>`<label class="teacher-check" data-name="${esc(String(s.nama).toLowerCase())}"><input type="checkbox" class="bundle-member" value="${esc(s.staff_id)}" ${selectedMembers.has(s.staff_id)?'checked':''}><span><b>${esc(s.nama)}</b><small>${esc(s.jawatan_hakiki||'')}</small></span></label>`).join('')}</div>
+      </div>
+      <div class="bundle-savebar"><button class="btn btn-primary" id="saveBundle">Simpan Bundle</button><span class="muted">Simpan terus selaraskan tugasan tahun aktif.</span></div>
+    </div>
+  </div>`;
+
+  $('#newBundle').onclick=()=>renderBundleAdmin('NEW');
+  $$('[data-bundle]').forEach(b=>b.onclick=()=>renderBundleAdmin(b.dataset.bundle));
+  const updateCount=()=>{$('#memberCount').textContent=`${$$('.bundle-member:checked').length} dipilih`};
+  $$('.bundle-member').forEach(c=>c.onchange=updateCount);
+  $('#teacherSearch').oninput=e=>{const q=e.target.value.trim().toLowerCase();$$('.teacher-check').forEach(row=>row.classList.toggle('hidden',q&&!row.dataset.name.includes(q)))};
+  $('#selectAllVisible').onclick=()=>{$$('.teacher-check:not(.hidden) .bundle-member').forEach(c=>c.checked=true);updateCount()};
+  $('#clearAll').onclick=()=>{$$('.bundle-member').forEach(c=>c.checked=false);updateCount()};
+  $('#saveBundle').onclick=async()=>{
+    const name=$('#bundleName').value.trim();if(!name){toast('Masukkan nama bundle.');return}
+    const btn=$('#saveBundle');btn.disabled=true;btn.textContent='Menyimpan…';
+    const payload={bundle_id:bundle.bundle_id||'',nama_bundle:name,keterangan:$('#bundleDesc').value.trim(),aktif:$('#bundleActive').checked,carry_forward:$('#bundleCarry').checked,member_ids:$$('.bundle-member:checked').map(x=>x.value),instrument_ids:$$('.bundle-inst:checked').map(x=>x.value)};
+    const saved=await post('save_bundle',payload);btn.disabled=false;btn.textContent='Simpan Bundle';
+    if(!saved.ok){toast(saved.message||saved.error||'Gagal simpan bundle.');return}
+    toast(`Bundle disimpan. ${saved.assignments_created||0} tugasan baharu.`);await viewBundles();
+  };
+  if($('#deactivateBundle')) $('#deactivateBundle').onclick=async()=>{if(!confirm(`Nyahaktif bundle "${bundle.nama_bundle}"?`))return;const r=await post('deactivate_bundle',{bundle_id:bundle.bundle_id});if(!r.ok){toast(r.message||r.error);return}toast('Bundle dinyahaktif.');await viewBundles()};
 }
 
 async function viewAdminAssignments(){
