@@ -4,7 +4,7 @@ const state = {
   token: localStorage.getItem('pk_token') || '',
   user: JSON.parse(localStorage.getItem('pk_user') || 'null'),
   boot: null,
-  route: 'dashboard',
+  route: 'assignments',
   currentAssignment: null,
   currentSubmission: null,
   currentItems: [],
@@ -69,6 +69,7 @@ async function start(){
   if(!who.ok){ logout(); return; }
   state.user=who.user;
   await loadBoot();
+  state.route='assignments';
   renderShell();
 }
 
@@ -83,32 +84,40 @@ function renderFatal(msg){
 }
 
 async function renderLogin(){
-  const status=await get('setup_status').catch(()=>({has_admin:true}));
-  const first=!status.has_admin;
-
   $('#app').innerHTML=`<div class="login-page">
     <div class="login-card">
       <div class="login-brand">
         <img class="school-logo" src="https://i.postimg.cc/3RF9M05N/Logo-SKSA.png" alt="Logo SK Sungai Abong">
       </div>
-      <h1>${first?'Setup Pentadbir Pertama':'Log Masuk'}</h1>
-      <p class="system-title">${first?'Buat akaun pentadbir pertama sistem.':'SISTEM DIGITAL PENJAMINAN KUALITI SK SG ABONG'}</p>
+      <h1>Log Masuk</h1>
+      <p class="system-title">SISTEM DIGITAL PENJAMINAN KUALITI SK SG ABONG</p>
       <form id="loginForm" class="stack">
-        ${first?`<div><label>Nama</label><input id="name" required></div>`:''}
-        <div><label>Email</label><input id="email" type="email" required></div>
-        <div><label>PIN (4–8 digit)</label><input id="pin" inputmode="numeric" pattern="\\d{4,8}" required></div>
-        <button class="btn btn-primary" type="submit">${first?'Cipta Pentadbir':'Log Masuk'}</button>
+        <div>
+          <label>No. Kad Pengenalan</label>
+          <input id="ic" inputmode="numeric" autocomplete="off" maxlength="14"
+                 placeholder="Contoh: 850110045025" required>
+        </div>
+        <button class="btn btn-primary" type="submit">Masuk</button>
       </form>
     </div>
   </div>`;
 
+  const icInput=$('#ic');
+  icInput.oninput=()=>{
+    const digits=icInput.value.replace(/\D/g,'').slice(0,12);
+    icInput.value=digits;
+  };
+
   $('#loginForm').onsubmit=async e=>{
     e.preventDefault();
-    const payload={email:$('#email').value.trim(),pin:$('#pin').value.trim()};
-    if(first) payload.nama=$('#name').value.trim();
-    const out=await post(first?'setup_admin':'login',payload);
-    if(!out.ok){toast(out.message||out.error||'Log masuk gagal');return}
-    setSession(out); await loadBoot(); renderShell();
+    const ic=icInput.value.replace(/\D/g,'');
+    if(ic.length!==12){toast('Masukkan 12 digit No. Kad Pengenalan.');return}
+    const out=await post('login_ic',{ic});
+    if(!out.ok){toast(out.message||'No. Kad Pengenalan tidak dijumpai.');return}
+    setSession(out);
+    await loadBoot();
+    state.route='assignments';
+    renderShell();
   };
 }
 
@@ -118,9 +127,9 @@ function renderShell(){
     <aside class="sidebar">
       <div class="brand">${esc(window.PK_CONFIG.APP_NAME)}<small>${esc(window.PK_CONFIG.SCHOOL_NAME)}</small></div>
       <div class="nav">
-        <button data-route="dashboard">Dashboard</button>
         <button data-route="assignments">Instrumen Saya</button>
-        ${admin?`<button data-route="staff">Guru</button>
+        ${admin?`<button data-route="dashboard">Dashboard</button>
+        <button data-route="staff">Guru</button>
         <button data-route="adminAssignments">Tugasan</button>
         <button data-route="submissions">Hantaran</button>
         <button data-route="settings">Tahun / Tetapan</button>`:''}
@@ -182,6 +191,13 @@ async function viewAssignments(){
   title('Instrumen Saya');
   const out=await get('assignments');
   const rows=out.assignments||[];
+
+  // Jika cuma satu instrumen ditugaskan, terus buka borang itu.
+  if(rows.length===1){
+    await openAssignment(rows[0].assignment_id,rows);
+    return;
+  }
+
   $('#view').innerHTML=`<div class="stack" id="assignmentList">
     ${rows.length?rows.map(a=>{
       const st=a.submission?.status||a.status||'OPEN';
@@ -327,7 +343,8 @@ function staffModal(s){
       <div><label>Email</label><input id="sEmail" type="email" value="${esc(s?.email||'')}" required></div>
       <div class="form-row"><div><label>Jawatan</label><input id="sJawatan" value="${esc(s?.jawatan_hakiki||'')}"></div>
       <div><label>Panitia</label><input id="sPanitia" value="${esc(s?.panitia||'')}"></div></div>
-      <div><label>PIN baharu ${s?'(kosong = kekal)':''}</label><input id="sPin" inputmode="numeric" pattern="\\d{4,8}" ${s?'':'required'}></div>
+      <div><label>No. Kad Pengenalan ${s?'(kosong = kekal)':''}</label><input id="sIc" inputmode="numeric" maxlength="12" placeholder="12 digit"></div>
+      <div><label>PIN lama (opsyen kecemasan) ${s?'(kosong = kekal)':''}</label><input id="sPin" inputmode="numeric" pattern="\\d{4,8}"></div>
       <label><input id="sAdmin" type="checkbox" style="width:auto" ${s?.is_admin?'checked':''}> Pentadbir sistem</label>
       <div class="toolbar"><button class="btn btn-primary" type="submit">Simpan</button><button class="btn btn-light" type="button" data-close>Tutup</button></div>
     </form>`);
@@ -339,7 +356,8 @@ function staffModal(s){
       jawatan_hakiki:$('#sJawatan').value,panitia:$('#sPanitia').value,
       is_admin:$('#sAdmin').checked
     };
-    if($('#sPin').value.trim()) payload.pin=$('#sPin').value.trim();
+    if($('#sIc') && $('#sIc').value.trim()) payload.ic=$('#sIc').value.trim();
+    if($('#sPin') && $('#sPin').value.trim()) payload.pin=$('#sPin').value.trim();
     const out=await post('upsert_staff',payload);
     if(!out.ok){toast(out.message||out.error);return}
     closeModal(); toast('Guru disimpan.'); viewStaff();

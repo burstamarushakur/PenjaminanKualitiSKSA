@@ -80,3 +80,8 @@ textarea{min-height:80px;resize:vertical}
 .school-logo{display:block;width:112px;height:112px;object-fit:contain}
 .login-card .system-title{font-weight:700;line-height:1.45;color:#475467;margin:0 0 24px;text-align:center}
 .login-card h1{text-align:center}
+
+
+.login-card{max-width:460px}
+.login-card #ic{font-size:18px;letter-spacing:.06em;text-align:center;font-weight:700}
+.login-card .btn-primary{width:100%}
