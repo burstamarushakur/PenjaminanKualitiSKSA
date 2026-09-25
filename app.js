@@ -4,6 +4,7 @@ const state = {
   token: localStorage.getItem('pk_token') || '',
   user: JSON.parse(localStorage.getItem('pk_user') || 'null'),
   boot: null,
+  assignments: JSON.parse(localStorage.getItem('pk_assignments') || '[]'),
   route: 'assignments',
   currentAssignment: null,
   currentSubmission: null,
@@ -40,37 +41,35 @@ async function post(action,payload={}){
 }
 
 function setSession(data){
-  state.token=data.token; state.user=data.user;
+  state.token=data.token;
+  state.user=data.user;
+  state.assignments=Array.isArray(data.assignments)?data.assignments:[];
   localStorage.setItem('pk_token',data.token);
   localStorage.setItem('pk_user',JSON.stringify(data.user));
+  localStorage.setItem('pk_assignments',JSON.stringify(state.assignments));
 }
 
 function logout(){
-  state.token=''; state.user=null; state.boot=null;
-  localStorage.removeItem('pk_token'); localStorage.removeItem('pk_user');
+  state.token=''; state.user=null; state.boot=null; state.assignments=[];
+  localStorage.removeItem('pk_token'); localStorage.removeItem('pk_user'); localStorage.removeItem('pk_assignments');
   renderLogin();
 }
 
 async function start(){
-  try{
-    const health=await get('health');
-    if(!health.ok) throw new Error('API tidak memberi respons.');
-  }catch(e){
-    renderFatal('Tak dapat hubungi Apps Script API. Pastikan deployment Web App aktif dan URL betul.');
-    return;
-  }
-
-  if(!state.token){
+  // SPEED: UI muncul terus. Jangan tunggu Apps Script health check.
+  if(!state.token || !state.user){
     renderLogin();
     return;
   }
 
-  const who=await get('whoami');
-  if(!who.ok){ logout(); return; }
-  state.user=who.user;
-  await loadBoot();
+  // Jika pernah login, shell + tugasan cache dipaparkan serta-merta.
   state.route='assignments';
   renderShell();
+
+  // Semak token / refresh tugasan di belakang.
+  refreshAssignments(true).catch(()=>{
+    logout();
+  });
 }
 
 async function loadBoot(){
@@ -112,10 +111,22 @@ async function renderLogin(){
     e.preventDefault();
     const ic=icInput.value.replace(/\D/g,'');
     if(ic.length!==12){toast('Masukkan 12 digit No. Kad Pengenalan.');return}
-    const out=await post('login_ic',{ic});
-    if(!out.ok){toast(out.message||'No. Kad Pengenalan tidak dijumpai.');return}
+    const btn=$('#loginForm button[type="submit"]');
+    btn.disabled=true; btn.textContent='Menyemak…';
+    let out;
+    try{
+      out=await post('login_ic',{ic});
+    }catch(err){
+      btn.disabled=false; btn.textContent='Masuk';
+      toast('Sambungan backend lambat/gagal. Cuba semula.');
+      return;
+    }
+    if(!out.ok){
+      btn.disabled=false; btn.textContent='Masuk';
+      toast(out.message||'No. Kad Pengenalan tidak dijumpai.');
+      return;
+    }
     setSession(out);
-    await loadBoot();
     state.route='assignments';
     renderShell();
   };
@@ -165,6 +176,7 @@ function title(t){ $('#pageTitle').textContent=t; }
 
 async function viewDashboard(){
   title('Dashboard');
+  if(!state.boot) await loadBoot();
   const d=await get('dashboard');
   const s=d.stats||{};
   $('#view').innerHTML=`<div class="grid grid4">
@@ -189,16 +201,29 @@ function stat(label,value){
 
 async function viewAssignments(){
   title('Instrumen Saya');
-  const out=await get('assignments');
-  const rows=out.assignments||[];
 
-  // Jika cuma satu instrumen ditugaskan, terus buka borang itu.
+  // Papar cache terus supaya pengguna tak nampak skrin kosong.
+  renderAssignmentRows(state.assignments || []);
+
+  // Refresh dari backend selepas UI sudah keluar.
+  await refreshAssignments(false);
+}
+
+function renderAssignmentRows(rows){
+  const view=$('#view');
+  if(!view) return;
+
   if(rows.length===1){
-    await openAssignment(rows[0].assignment_id,rows);
+    view.innerHTML=`<div class="card loading-card">
+      <div class="spinner"></div>
+      <b>Membuka instrumen…</b>
+      <span class="muted">${esc(rows[0].instrument?.tajuk||rows[0].instrument_id)}</span>
+    </div>`;
+    openAssignment(rows[0].assignment_id,rows);
     return;
   }
 
-  $('#view').innerHTML=`<div class="stack" id="assignmentList">
+  view.innerHTML=`<div class="stack" id="assignmentList">
     ${rows.length?rows.map(a=>{
       const st=a.submission?.status||a.status||'OPEN';
       return `<div class="assignment">
@@ -215,27 +240,42 @@ async function viewAssignments(){
   $$('[data-open]').forEach(b=>b.onclick=()=>openAssignment(b.dataset.open,rows));
 }
 
-async function openAssignment(id,rows){
-  const a=rows.find(x=>x.assignment_id===id); if(!a)return;
-  state.currentAssignment=a;
+async function refreshAssignments(silent=false){
+  const out=await get('assignments');
+  if(!out.ok) throw new Error(out.message||out.error||'Gagal memuat tugasan.');
+  state.assignments=out.assignments||[];
+  localStorage.setItem('pk_assignments',JSON.stringify(state.assignments));
 
-  let sub=a.submission;
-  if(!sub){
-    const s=await post('start_submission',{assignment_id:id});
-    if(!s.ok){toast(s.message||s.error);return}
-    sub=s.submission;
+  if(state.route==='assignments'){
+    renderAssignmentRows(state.assignments);
   }
-  state.currentSubmission=sub;
+  return state.assignments;
+}
 
-  const [itemsOut,subOut]=await Promise.all([
-    get('items',{instrument_id:a.instrument_id,version_id:a.version_id}),
-    get('submission',{submission_id:sub.submission_id})
-  ]);
-  state.currentItems=itemsOut.items||[];
+async function openAssignment(id,rows){
+  const cached=(rows||state.assignments||[]).find(x=>x.assignment_id===id);
+  if(cached) state.currentAssignment=cached;
+
+  const view=$('#view');
+  if(view){
+    view.innerHTML=`<div class="card loading-card">
+      <div class="spinner"></div>
+      <b>Memuatkan instrumen…</b>
+      <span class="muted">Sekejap sahaja.</span>
+    </div>`;
+  }
+
+  // SPEED: satu request sahaja untuk start submission + items + responses.
+  const out=await post('open_assignment',{assignment_id:id});
+  if(!out.ok){toast(out.message||out.error||'Gagal membuka instrumen.'); return}
+
+  state.currentAssignment=out.assignment;
+  state.currentSubmission=out.submission;
+  state.currentItems=out.items||[];
   state.currentResponses={};
-  (subOut.responses||[]).forEach(r=>state.currentResponses[r.item_id]=r);
+  (out.responses||[]).forEach(r=>state.currentResponses[r.item_id]=r);
 
-  renderForm(a,sub);
+  renderForm(out.assignment,out.submission);
 }
 
 function renderForm(a,sub){
@@ -366,6 +406,7 @@ function staffModal(s){
 
 async function viewAdminAssignments(){
   title('Tugasan Instrumen');
+  if(!state.boot) await loadBoot();
   const [staffOut,own] = await Promise.all([get('staff'), get('assignments',{staff_id:state.user.staff_id})]);
   const staff=staffOut.staff||[];
   const inst=state.boot.instruments||[];
@@ -401,6 +442,7 @@ async function viewSubmissions(){
 
 async function viewSettings(){
   title('Tahun / Tetapan');
+  if(!state.boot) await loadBoot();
   const sessions=state.boot.sessions||[];
   $('#view').innerHTML=`<div class="grid grid2">
     <div class="card"><h2>Buka Tahun Baharu</h2><p class="muted">Folder Drive, sesi dan kitaran pertama akan dijana automatik.</p>

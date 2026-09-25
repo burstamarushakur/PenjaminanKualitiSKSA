@@ -85,3 +85,8 @@ textarea{min-height:80px;resize:vertical}
 .login-card{max-width:460px}
 .login-card #ic{font-size:18px;letter-spacing:.06em;text-align:center;font-weight:700}
 .login-card .btn-primary{width:100%}
+
+.loading-card{min-height:180px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:10px;text-align:center}
+.spinner{width:32px;height:32px;border:3px solid #dbe4f0;border-top-color:var(--primary);border-radius:50%;animation:pkspin .7s linear infinite}
+@keyframes pkspin{to{transform:rotate(360deg)}}
+button:disabled{opacity:.65;cursor:wait}
