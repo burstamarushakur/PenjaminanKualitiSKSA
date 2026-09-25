@@ -88,8 +88,11 @@ async function renderLogin(){
 
   $('#app').innerHTML=`<div class="login-page">
     <div class="login-card">
+      <div class="login-brand">
+        <img class="school-logo" src="https://i.postimg.cc/3RF9M05N/Logo-SKSA.png" alt="Logo SK Sungai Abong">
+      </div>
       <h1>${first?'Setup Pentadbir Pertama':'Log Masuk'}</h1>
-      <p>${first?'Buat akaun pentadbir pertama sistem.':'Penjaminan Kualiti PBS'}</p>
+      <p class="system-title">${first?'Buat akaun pentadbir pertama sistem.':'SISTEM DIGITAL PENJAMINAN KUALITI SK SG ABONG'}</p>
       <form id="loginForm" class="stack">
         ${first?`<div><label>Nama</label><input id="name" required></div>`:''}
         <div><label>Email</label><input id="email" type="email" required></div>
