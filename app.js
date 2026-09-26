@@ -875,10 +875,13 @@ async function loadOfficialKpmPdf(){
   if(!kpmSourcePromise){
     kpmSourcePromise=fetch('/api/kpm-pdf',{cache:'force-cache'}).then(async r=>{
       if(!r.ok) throw new Error(`Template rasmi KPM gagal dimuatkan (${r.status}).`);
-      return await r.arrayBuffer();
+      const raw=await r.arrayBuffer();
+      // Simpan sebagai Uint8Array immutable-style; setiap penggunaan dapat salinan sendiri.
+      return new Uint8Array(raw);
     });
   }
-  return (await kpmSourcePromise).slice(0);
+  const cached=await kpmSourcePromise;
+  return cached.slice().buffer;
 }
 
 async function extractKpmPages(sourceBytes, instrumentId){
@@ -886,7 +889,10 @@ async function extractKpmPages(sourceBytes, instrumentId){
   const targetTemplate=KPM_TEMPLATE_MARKERS[instrumentId];
   if(!targetTemplate) throw new Error(`Template rasmi ${instrumentId} belum dipetakan.`);
 
-  const loading=pdfjs.getDocument({data:new Uint8Array(sourceBytes)});
+  // PDF.js boleh mengambil alih (detach) ArrayBuffer yang diterima.
+  // Gunakan salinan khas untuk parser PDF.js supaya buffer lain kekal selamat.
+  const pdfJsBytes=new Uint8Array(sourceBytes.slice(0));
+  const loading=pdfjs.getDocument({data:pdfJsBytes});
   const doc=await loading.promise;
   const pages=[];
   const starts={};
@@ -1034,9 +1040,14 @@ async function stampOfficialKpmPdf(detail){
   const items=detail.items||[];
   const instrumentId=sub.instrument_id;
   const {PDFDocument,rgb,StandardFonts}=await loadPdfLib();
-  const slice=await extractKpmPages(sourceBytes,instrumentId);
 
-  const srcDoc=await PDFDocument.load(sourceBytes);
+  // Asingkan buffer scan dan buffer edit.
+  // Ini elak error browser: "Cannot perform Construct on a detached ArrayBuffer".
+  const scanBytes=sourceBytes.slice(0);
+  const editBytes=sourceBytes.slice(0);
+  const slice=await extractKpmPages(scanBytes,instrumentId);
+
+  const srcDoc=await PDFDocument.load(editBytes);
   const outDoc=await PDFDocument.create();
   const indices=[];
   for(let p=slice.startPage;p<=slice.endPage;p++) indices.push(p-1);
