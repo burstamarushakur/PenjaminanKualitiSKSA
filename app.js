@@ -1,3 +1,4 @@
+// v2.2: PDF output uses original official KPM PDF as template via same-origin Vercel proxy.
 import { createClient } from 'https://esm.sh/@neondatabase/neon-js';
 
 
@@ -782,65 +783,312 @@ async function submissionDetail(submissionId){
   return out;
 }
 
-async function fetchImageDataUrl(url){
-  const r=await fetch(url,{mode:'cors'});
-  const b=await r.blob();
-  return await new Promise((resolve,reject)=>{const fr=new FileReader();fr.onload=()=>resolve(fr.result);fr.onerror=reject;fr.readAsDataURL(b)});
+
+const KPM_TEMPLATE_MARKERS = {
+  'PBD-A': ['INSTRUMEN PENJAMINAN MUTU PBD_SLT', 'LAMPIRAN A'],
+  'PBD-B': ['INSTRUMEN PENJAMINAN MUTU PBD_ML', 'LAMPIRAN B'],
+  'PBD-C': ['INSTRUMEN PENJAMINAN MUTU PBD_GMP', 'LAMPIRAN C'],
+  'PAJSK-A': ['INSTRUMEN PENJAMINAN MUTU PAJSK_SLT', 'LAMPIRAN A'],
+  'PAJSK-B': ['INSTRUMEN PENJAMINAN MUTU PAJSK_GURU KOKURIKULUM', 'LAMPIRAN B'],
+  'SEGAK-A': ['INSTRUMEN PENJAMINAN MUTU SEGAK& BMI5-9T_SLT', 'LAMPIRAN A'],
+  'SEGAK-B': ['INSTRUMEN PENJAMINAN MUTU SEGAK & BMI 5-9T_ML', 'LAMPIRAN B'],
+  'SEGAK-C': ['INSTRUMEN PENJAMINAN MUTU SEGAK & BMI5-9T_GMP/GPRA', 'LAMPIRAN C']
+};
+
+let kpmPdfLibPromise=null;
+let kpmPdfJsPromise=null;
+let kpmSourcePromise=null;
+
+function normPdfText(v){
+  return String(v||'')
+    .normalize('NFKC')
+    .replace(/\s+/g,' ')
+    .trim()
+    .toUpperCase();
+}
+
+async function loadPdfLib(){
+  if(!kpmPdfLibPromise) kpmPdfLibPromise=import('https://esm.sh/pdf-lib@1.17.1');
+  return kpmPdfLibPromise;
+}
+
+async function loadPdfJs(){
+  if(!kpmPdfJsPromise){
+    kpmPdfJsPromise=import('https://esm.sh/pdfjs-dist@4.10.38/legacy/build/pdf.mjs').then(m=>{
+      m.GlobalWorkerOptions.workerSrc='https://esm.sh/pdfjs-dist@4.10.38/legacy/build/pdf.worker.mjs';
+      return m;
+    });
+  }
+  return kpmPdfJsPromise;
+}
+
+async function loadOfficialKpmPdf(){
+  if(!kpmSourcePromise){
+    kpmSourcePromise=fetch('/api/kpm-pdf',{cache:'force-cache'}).then(async r=>{
+      if(!r.ok) throw new Error(`Template rasmi KPM gagal dimuatkan (${r.status}).`);
+      return await r.arrayBuffer();
+    });
+  }
+  return (await kpmSourcePromise).slice(0);
+}
+
+async function extractKpmPages(sourceBytes, instrumentId){
+  const pdfjs=await loadPdfJs();
+  const marker=KPM_TEMPLATE_MARKERS[instrumentId];
+  if(!marker) throw new Error(`Template rasmi ${instrumentId} belum dipetakan.`);
+
+  const loading=pdfjs.getDocument({data:new Uint8Array(sourceBytes)});
+  const doc=await loading.promise;
+  const pages=[];
+  let startPage=0, endPage=0;
+
+  for(let p=1;p<=doc.numPages;p++){
+    const page=await doc.getPage(p);
+    const tc=await page.getTextContent();
+    const text=normPdfText(tc.items.map(x=>x.str).join(' '));
+    pages.push({pageNo:p,page,text,items:tc.items});
+    const hasMarker=text.includes(normPdfText(marker[0])) && text.includes(normPdfText(marker[1]));
+    if(!startPage && hasMarker) startPage=p;
+    if(startPage && p>=startPage && text.includes('-TAMAT-')){
+      endPage=p;
+      break;
+    }
+  }
+
+  if(!startPage) throw new Error(`Halaman rasmi KPM untuk ${instrumentId} tidak dijumpai.`);
+  if(!endPage) throw new Error(`Penghujung borang rasmi KPM untuk ${instrumentId} tidak dijumpai.`);
+
+  return {
+    startPage,endPage,
+    pages:pages.filter(x=>x.pageNo>=startPage && x.pageNo<=endPage),
+    pdfjsDoc:doc
+  };
+}
+
+function textCandidates(pageInfo, exactText){
+  const target=normPdfText(exactText);
+  return pageInfo.items
+    .map((it,idx)=>({it,idx,s:normPdfText(it.str),x:it.transform?.[4]||0,y:it.transform?.[5]||0,w:it.width||0,h:Math.abs(it.transform?.[3]||10)}))
+    .filter(x=>x.s===target);
+}
+
+function sequentialItemAnchors(pageInfos, items){
+  const all=[];
+  pageInfos.forEach((p,pi)=>{
+    p.items.forEach((it,idx)=>{
+      all.push({pi,idx,s:normPdfText(it.str),x:it.transform?.[4]||0,y:it.transform?.[5]||0,w:it.width||0,h:Math.abs(it.transform?.[3]||10),it});
+    });
+  });
+
+  let cursor=-1;
+  const anchors=new Map();
+  for(const q of items){
+    const n=normPdfText(q.no_item);
+    let found=-1;
+    for(let i=cursor+1;i<all.length;i++){
+      if(all[i].s===n){ found=i; break; }
+    }
+
+    if(found<0){
+      const words=normPdfText(q.pernyataan).split(' ').filter(w=>w.length>=5).slice(0,3);
+      for(let i=cursor+1;i<all.length;i++){
+        const s=all[i].s;
+        if(words.some(w=>s.includes(w))){ found=i; break; }
+      }
+    }
+
+    if(found>=0){
+      anchors.set(q.item_id,all[found]);
+      cursor=found;
+    }
+  }
+  return anchors;
+}
+
+function answerTextFor(item){
+  const a=String(item.jawapan||'').trim();
+  if(!a) return '';
+  if(item.jenis_respons==='YA_TIDAK') return /^TIDAK$/i.test(a)?'TIDAK':'YA';
+  return a;
+}
+
+function findAnswerTarget(pageInfo, anchor, item){
+  const wanted=normPdfText(answerTextFor(item));
+  if(!wanted) return null;
+
+  const candidates=pageInfo.items.map((it,idx)=>({
+    it,idx,s:normPdfText(it.str),
+    x:it.transform?.[4]||0,y:it.transform?.[5]||0,w:it.width||0,h:Math.abs(it.transform?.[3]||10)
+  })).filter(c=>{
+    if(c.s!==wanted) return false;
+    const dy=Math.abs(c.y-anchor.y);
+    return dy<=24 && c.x>anchor.x+40;
+  });
+
+  if(!candidates.length) return null;
+  candidates.sort((a,b)=>{
+    const da=Math.abs(a.y-anchor.y)+(a.x<anchor.x?500:0);
+    const db=Math.abs(b.y-anchor.y)+(b.x<anchor.x?500:0);
+    return da-db;
+  });
+  return candidates[0];
+}
+
+function findLabel(pageInfo, labels){
+  const needles=labels.map(normPdfText);
+  const arr=pageInfo.items.map((it,idx)=>({
+    it,idx,s:normPdfText(it.str),x:it.transform?.[4]||0,y:it.transform?.[5]||0,w:it.width||0,h:Math.abs(it.transform?.[3]||10)
+  }));
+  for(const needle of needles){
+    const exact=arr.find(x=>x.s===needle);
+    if(exact) return exact;
+    const partial=arr.find(x=>x.s.startsWith(needle) || x.s.includes(needle));
+    if(partial) return partial;
+  }
+  return null;
+}
+
+async function stampOfficialKpmPdf(detail){
+  const sourceBytes=await loadOfficialKpmPdf();
+  const sub=detail.submission;
+  const items=detail.items||[];
+  const instrumentId=sub.instrument_id;
+  const {PDFDocument,rgb,StandardFonts}=await loadPdfLib();
+  const slice=await extractKpmPages(sourceBytes,instrumentId);
+
+  const srcDoc=await PDFDocument.load(sourceBytes);
+  const outDoc=await PDFDocument.create();
+  const indices=[];
+  for(let p=slice.startPage;p<=slice.endPage;p++) indices.push(p-1);
+  const copied=await outDoc.copyPages(srcDoc,indices);
+  copied.forEach(p=>outDoc.addPage(p));
+
+  const font=await outDoc.embedFont(StandardFonts.Helvetica);
+  const bold=await outDoc.embedFont(StandardFonts.HelveticaBold);
+  const black=rgb(0,0,0);
+
+  const pageInfos=slice.pages;
+  const anchors=sequentialItemAnchors(pageInfos,items);
+
+  // Isi maklumat asas pada halaman pertama tanpa mengubah layout asal KPM.
+  const firstInfo=pageInfos[0];
+  const firstOut=outDoc.getPage(0);
+  const metaPairs=[
+    {labels:['NAMA:','NAMA :','NAMA'],value:sub.staff_name||''},
+    {labels:['JAWATAN:','JAWATAN :','JAWATAN'],value:sub.job_title||sub.target_role||''}
+  ];
+  for(const m of metaPairs){
+    const lab=findLabel(firstInfo,m.labels);
+    if(lab && m.value){
+      firstOut.drawText(String(m.value),{
+        x:Math.min(lab.x+lab.w+12, firstOut.getWidth()-260),
+        y:lab.y-1,size:9,font,color:black,maxWidth:250
+      });
+    }
+  }
+
+  // Tandakan/bulatkan jawapan tepat pada ruangan asal PDF KPM.
+  for(const q of items){
+    const a=anchors.get(q.item_id);
+    if(!a) continue;
+    const pInfo=pageInfos[a.pi];
+    const target=findAnswerTarget(pInfo,a,q);
+    if(!target) continue;
+    const outPage=outDoc.getPage(a.pi);
+
+    if(q.jenis_respons==='YA_TIDAK'){
+      const cx=target.x+Math.max(target.w,8)/2;
+      const cy=target.y+Math.max(target.h,8)/3;
+      const r=5;
+      outPage.drawLine({start:{x:cx-r,y:cy-r},end:{x:cx+r,y:cy+r},thickness:1.4,color:black});
+      outPage.drawLine({start:{x:cx-r,y:cy+r},end:{x:cx+r,y:cy-r},thickness:1.4,color:black});
+    }else{
+      const cx=target.x+Math.max(target.w,6)/2;
+      const cy=target.y+Math.max(target.h,8)/3;
+      outPage.drawEllipse({
+        x:cx,y:cy,
+        xScale:Math.max(7,target.w/2+4),
+        yScale:7,
+        borderColor:black,
+        borderWidth:1.3
+      });
+    }
+
+    if(String(q.catatan||'').trim()){
+      const pageW=outPage.getWidth();
+      outPage.drawText(String(q.catatan).slice(0,80),{
+        x:pageW*0.82,y:a.y-1,size:6.8,font,color:black,maxWidth:pageW*0.16
+      });
+    }
+  }
+
+  // Tandatangan, nama dan tarikh pada ruang asal KPM di halaman terakhir.
+  const lastIndex=outDoc.getPageCount()-1;
+  const lastPage=outDoc.getPage(lastIndex);
+  const lastInfo=pageInfos[pageInfos.length-1];
+
+  const sigLabel=findLabel(lastInfo,['TANDATANGAN :','TANDATANGAN:','TANDATANGAN']);
+  const nameLabels=lastInfo.items.map((it,idx)=>({it,idx,s:normPdfText(it.str),x:it.transform?.[4]||0,y:it.transform?.[5]||0,w:it.width||0}))
+    .filter(x=>x.s==='NAMA :'||x.s==='NAMA:'||x.s==='NAMA')
+    .sort((a,b)=>a.y-b.y);
+  const dateLabel=findLabel(lastInfo,['TARIKH :','TARIKH:','TARIKH']);
+
+  if(sigLabel && sub.signature_data_url){
+    try{
+      const b64=sub.signature_data_url.split(',')[1]||'';
+      const bytes=Uint8Array.from(atob(b64),c=>c.charCodeAt(0));
+      const img=await outDoc.embedPng(bytes);
+      const x=Math.min(sigLabel.x+sigLabel.w+12,lastPage.getWidth()-130);
+      const y=Math.max(20,sigLabel.y-28);
+      lastPage.drawImage(img,{x,y,width:110,height:38});
+    }catch(err){console.warn('Signature stamp failed',err)}
+  }
+  const sigName=nameLabels.length?nameLabels[0]:null;
+  if(sigName && (sub.signer_name||sub.staff_name)){
+    lastPage.drawText(String(sub.signer_name||sub.staff_name),{
+      x:Math.min(sigName.x+sigName.w+12,lastPage.getWidth()-260),
+      y:sigName.y-1,size:8.5,font,color:black,maxWidth:250
+    });
+  }
+  if(dateLabel){
+    const dt=sub.signed_at||sub.submitted_at;
+    const dateText=dt?new Date(dt).toLocaleDateString('ms-MY'):'';
+    if(dateText){
+      lastPage.drawText(dateText,{
+        x:Math.min(dateLabel.x+dateLabel.w+12,lastPage.getWidth()-120),
+        y:dateLabel.y-1,size:8.5,font,color:black,maxWidth:110
+      });
+    }
+  }
+
+  const bytes=await outDoc.save();
+  return bytes;
 }
 
 async function downloadSubmissionPdf(submissionId){
-  showLoader('Menjana PDF…','Sedang menyediakan borang A4 untuk dimuat turun.');
+  showLoader('Menjana PDF Rasmi KPM…','Mengisi jawapan pada borang asal KPM. Jangan tutup halaman ini.');
   try{
     const detail=await submissionDetail(submissionId);
-    const {jsPDF}=await import('https://esm.sh/jspdf@2.5.2');
-    const doc=new jsPDF({orientation:'portrait',unit:'mm',format:'a4'});
     const sub=detail.submission;
-    const items=detail.items||[];
-    const margin=14, pageW=210, pageH=297, contentW=pageW-margin*2;
-    let y=14;
-    try{
-      const logo=await fetchImageDataUrl('https://i.postimg.cc/3RF9M05N/Logo-SKSA.png');
-      doc.addImage(logo,'PNG',margin,y,18,18);
-    }catch(_){/* PDF kekal berfungsi walaupun logo gagal */}
-    doc.setFont('helvetica','bold');doc.setFontSize(13);doc.text('SISTEM DIGITAL PENJAMINAN KUALITI',pageW/2,y+6,{align:'center'});
-    doc.setFontSize(10);doc.text('SK SG ABONG',pageW/2,y+12,{align:'center'});
-    y+=25;
-    doc.setDrawColor(190);doc.line(margin,y,pageW-margin,y);y+=7;
-    doc.setFontSize(11);doc.text(sub.instrument_title||sub.instrument_id,margin,y);y+=7;
-    doc.setFont('helvetica','normal');doc.setFontSize(9);
-    const meta=[['Nama',sub.staff_name],['Jawatan',sub.job_title||sub.target_role||'-'],['Tahun',String(sub.year||'')],['Status',sub.status],['Tarikh Hantar',formatDateTime(sub.submitted_at)]];
-    meta.forEach(([k,v])=>{doc.setFont('helvetica','bold');doc.text(`${k}:`,margin,y);doc.setFont('helvetica','normal');doc.text(String(v||'-'),margin+30,y);y+=5.5});
-    y+=3;
-    let lastSec='';
-    const newPage=()=>{doc.addPage();y=16};
-    for(const item of items){
-      const sec=`${item.bahagian||''} — ${item.seksyen||''}`;
-      if(sec!==lastSec){
-        if(y>270)newPage();
-        y+=3;doc.setFont('helvetica','bold');doc.setFontSize(10);doc.text(sec,margin,y);y+=5;lastSec=sec;
-      }
-      doc.setFontSize(8.5);doc.setFont('helvetica','bold');
-      const q=doc.splitTextToSize(`${item.no_item||''}. ${item.pernyataan||''}`,contentW);
-      const note=item.catatan?doc.splitTextToSize(`Catatan: ${item.catatan}`,contentW-8):[];
-      const needed=q.length*4.2+10+note.length*3.8;
-      if(y+needed>282)newPage();
-      doc.text(q,margin,y);y+=q.length*4.2+1.5;
-      doc.setFont('helvetica','normal');doc.text(`Jawapan: ${item.jawapan||'-'}`,margin+4,y);y+=4.2;
-      if(note.length){doc.setTextColor(85);doc.text(note,margin+4,y);doc.setTextColor(0);y+=note.length*3.8+1}
-      doc.setDrawColor(230);doc.line(margin,y,pageW-margin,y);y+=4;
-    }
-    if(y>235)newPage();
-    y+=6;doc.setFont('helvetica','bold');doc.setFontSize(9);doc.text('PENGESAHAN',margin,y);y+=7;
-    doc.setFont('helvetica','normal');doc.text(`Nama Penandatangan: ${sub.signer_name||sub.staff_name||'-'}`,margin,y);y+=6;
-    doc.text(`Tarikh Tandatangan: ${formatDateTime(sub.signed_at)}`,margin,y);y+=5;
-    if(sub.signature_data_url){
-      try{doc.addImage(sub.signature_data_url,'PNG',margin,y,55,24);y+=27}catch(_){doc.text('[Tandatangan digital disimpan]',margin,y);y+=6}
-    }
-    doc.setFontSize(7.5);doc.setTextColor(100);doc.text(`ID Hantaran: ${sub.submission_id}`,margin,pageH-10);
+    if(!sub || sub.status!=='SUBMITTED') throw new Error('PDF hanya tersedia selepas instrumen dihantar.');
+
+    const bytes=await stampOfficialKpmPdf(detail);
+    const blob=new Blob([bytes],{type:'application/pdf'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
     const safeName=String(sub.staff_name||'guru').replace(/[^A-Za-z0-9]+/g,'_').replace(/^_|_$/g,'');
-    doc.save(`${sub.instrument_id}_${safeName}_${sub.year||''}.pdf`);
-  }catch(err){console.error(err);toast(err.message||'Gagal menjana PDF.');}
-  finally{hideLoader()}
+    a.href=url;
+    a.download=`${sub.instrument_id}_${safeName}_${sub.year||''}_KPM.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),30000);
+  }catch(err){
+    console.error(err);
+    toast(err.message||'Gagal menjana PDF rasmi KPM.');
+  }finally{
+    hideLoader();
+  }
 }
 
 async function viewSettings(){
