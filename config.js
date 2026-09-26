@@ -1,5 +1,6 @@
 window.PK_CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbz7mAd3lHIVkJedI1TjNpmfB758odY1V79JUXH2B7udiw7HQNXjFiU0HvAkMIePDs-IRw/exec',
+  NEON_DATABASE_URL: 'https://ep-cold-lake-b4yhxpjs.c-6.us-east-2.aws.neon.tech/neondb',
   APP_NAME: 'SISTEM DIGITAL PENJAMINAN KUALITI SK SG ABONG',
-  SCHOOL_NAME: 'SKSA'
+  SCHOOL_NAME: 'SKSA',
+  BACKEND: 'NEON'
 };

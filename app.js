@@ -1,5 +1,7 @@
+import { createClient } from 'https://esm.sh/@neondatabase/neon-js';
 
-const API = window.PK_CONFIG.API_URL;
+
+const neon = createClient(window.PK_CONFIG.NEON_DATABASE_URL, { auth: { allowAnonymous: true } });
 
 function safeStoredJson(key,fallback){
   try{
@@ -79,40 +81,68 @@ function hideLoader(){
   if(el) el.classList.add('hidden');
 }
 
-async function fetchJson_(url,options={},timeoutMs=20000){
-  const controller=new AbortController();
-  const timer=setTimeout(()=>controller.abort(),timeoutMs);
-  try{
-    const r=await fetch(url,{...options,signal:controller.signal,cache:'no-store'});
-    return await r.json();
-  }finally{
-    clearTimeout(timer);
+async function rpc_(fn,args={}){
+  const {data,error}=await neon.rpc(fn,args);
+  if(error){
+    console.error('Neon RPC',fn,error);
+    throw new Error(error.message||'Ralat pangkalan data.');
   }
+  return data;
 }
 
 async function get(action, params={}, opts={}){
-  const {loading=false,title='Memuatkan Sistem…',desc='Sila tunggu sebentar.',timeoutMs=20000}=opts||{};
+  const {loading=false,title='Memuatkan Sistem…',desc='Sila tunggu sebentar.'}=opts||{};
   if(loading) showLoader(title,desc);
   try{
-    const u=new URL(API);
-    u.searchParams.set('action',action);
-    if(state.token) u.searchParams.set('token',state.token);
-    Object.entries(params).forEach(([k,v])=>v!==undefined&&v!==null&&u.searchParams.set(k,v));
-    return await fetchJson_(u,{redirect:'follow'},timeoutMs);
+    if(action==='bootstrap') return await rpc_('pk_bootstrap',{p_token:state.token});
+    if(action==='dashboard') return await rpc_('pk_dashboard',{p_token:state.token});
+    if(action==='assignments') return await rpc_('pk_assignments',{p_token:state.token});
+    if(action==='staff') return await rpc_('pk_admin_staff',{p_token:state.token});
+    if(action==='bundles') return await rpc_('pk_bundle_data',{p_token:state.token});
+    if(action==='submissions') return await rpc_('pk_admin_submissions',{p_token:state.token});
+    return {ok:false,error:'UNKNOWN_ACTION',action};
   }finally{
     if(loading) hideLoader();
   }
 }
 
 async function post(action,payload={},opts={}){
-  const {loading=false,title='Memuatkan Sistem…',desc='Sila tunggu sebentar.',timeoutMs=20000}=opts||{};
+  const {loading=false,title='Memuatkan Sistem…',desc='Sila tunggu sebentar.'}=opts||{};
   if(loading) showLoader(title,desc);
   try{
-    return await fetchJson_(API,{
-      method:'POST',
-      headers:{'Content-Type':'text/plain;charset=utf-8'},
-      body:JSON.stringify({action,token:state.token,payload})
-    },timeoutMs);
+    if(action==='login_ic') return await rpc_('pk_login',{p_ic:payload.ic});
+    if(action==='open_assignment') return await rpc_('pk_open_assignment',{p_token:state.token,p_assignment_id:payload.assignment_id});
+    if(action==='save_responses') return await rpc_('pk_save_responses',{
+      p_token:state.token,
+      p_assignment_id:payload.assignment_id,
+      p_submission_id:payload.submission_id||null,
+      p_responses:payload.responses||[]
+    });
+    if(action==='submit_submission') return await rpc_('pk_submit',{
+      p_token:state.token,
+      p_submission_id:payload.submission_id,
+      p_signer_name:payload.nama_penandatangan,
+      p_signature_data_url:payload.signature_data||''
+    });
+    if(action==='upsert_staff') return await rpc_('pk_upsert_staff',{
+      p_token:state.token,p_staff_id:payload.staff_id||null,p_nama:payload.nama||'',p_email:payload.email||'',
+      p_jawatan:payload.jawatan_hakiki||'',p_panitia:payload.panitia||'',p_ic:payload.ic||'',
+      p_is_admin:!!payload.is_admin,p_aktif:payload.aktif!==false
+    });
+    if(action==='save_bundle') return await rpc_('pk_save_bundle',{
+      p_token:state.token,p_bundle_id:payload.bundle_id||null,p_nama_bundle:payload.nama_bundle||'',
+      p_keterangan:payload.keterangan||'',p_aktif:payload.aktif!==false,p_carry_forward:payload.carry_forward!==false,
+      p_member_ids:payload.member_ids||[],p_instrument_ids:payload.instrument_ids||[]
+    });
+    if(action==='deactivate_bundle') return await rpc_('pk_deactivate_bundle',{p_token:state.token,p_bundle_id:payload.bundle_id});
+    if(action==='create_assignment') return await rpc_('pk_create_assignment',{
+      p_token:state.token,p_staff_id:payload.staff_id,p_instrument_id:payload.instrument_id,
+      p_cycle_id:payload.cycle_id||null,p_due_date:payload.tarikh_akhir||null
+    });
+    if(action==='delete_submission') return await rpc_('pk_delete_draft',{p_token:state.token,p_submission_id:payload.submission_id});
+    if(action==='open_year') return await rpc_('pk_open_year',{p_token:state.token,p_year:Number(payload.tahun)});
+    if(action==='generate_pdf') return {ok:false,error:'PDF_MIGRATION_PENDING',message:'PDF sedang dipindahkan ke Neon Storage. Hantaran anda tetap selamat.'};
+    return {ok:false,error:'UNKNOWN_ACTION',action};
   }finally{
     if(loading) hideLoader();
   }
@@ -273,7 +303,7 @@ async function viewDashboard(){
   </div>
   <div class="section-title"><h2>Sesi Aktif</h2></div>
   <div class="card">
-    <b>${esc(state.boot.active_session?.nama||'-')}</b>
+    <b>${esc(state.boot.active_session?.nama||state.boot.active_session?.name||'-')}</b>
     <p class="muted">Tahun aktif: ${esc(state.boot.config.TAHUN_AKTIF||'-')}</p>
     <div class="toolbar">
       <button class="btn btn-primary" onclick="go('assignments')">Buka Instrumen Saya</button>
@@ -396,7 +426,7 @@ function renderForm(a,sub){
       </div>
       <div class="signature-pad-wrap"><canvas id="signaturePad" aria-label="Pad tandatangan digital"></canvas></div>
     </div>
-    <div class="toolbar" style="margin-top:14px"><button id="submitForm" class="btn btn-success">Hantar & Jana PDF</button></div>
+    <div class="toolbar" style="margin-top:14px"><button id="submitForm" class="btn btn-success">Hantar Instrumen</button></div>
   </div>`}`;
 
   $('#backAssign').onclick=()=>viewAssignments();
@@ -453,7 +483,7 @@ function renderItem(item,r,locked){
   }
   return `<div class="form-item">
     <div class="q">${esc(item.no_item)}. ${esc(item.pernyataan)}</div>
-    <div class="meta">${esc(item.jenis_respons)}${item.wajib==='TRUE'?' · wajib':''}</div>
+    <div class="meta">${esc(item.jenis_respons)}${(item.wajib===true||item.wajib==='TRUE')?' · wajib':''}</div>
     ${control}
     <div style="margin-top:10px"><textarea ${locked?'disabled':''} data-item="${esc(item.item_id)}" data-field="catatan" placeholder="Catatan (jika perlu)">${esc(r.catatan||'')}</textarea></div>
   </div>`;
@@ -510,23 +540,16 @@ async function submitCurrent(){
       return;
     }
 
-    state.currentSubmission={...state.currentSubmission,status:'SUBMITTED',signature_url:out.signature_url||''};
-
-    let pdfOut=null;
-    try{
-      pdfOut=await post('generate_pdf',{submission_id:state.currentSubmission.submission_id},{
-        loading:true,title:'Menjana PDF…',desc:'Hantaran sudah berjaya. Sedang menyediakan fail PDF.',timeoutMs:90000
-      });
-    }catch(err){console.error(err)}
-
-    toast(pdfOut?.ok?'Hantaran berjaya dan PDF telah dijana.':'Hantaran berjaya. PDF belum siap dan boleh dijana semula di menu Hantaran.');
+    state.currentSubmission={...state.currentSubmission,status:'SUBMITTED'};
+    toast('Hantaran berjaya disimpan dalam Neon.');
+    await refreshAssignments(true);
     await viewAssignments();
   }catch(err){
     console.error(err);
     const msg=err?.name==='AbortError'?'Proses mengambil masa terlalu lama. Data jawapan masih disimpan — cuba Hantar semula.':(err?.message||'Gagal menghantar instrumen.');
     toast(msg);
   }finally{
-    if(btn){btn.disabled=false;btn.textContent='Hantar & Jana PDF'}
+    if(btn){btn.disabled=false;btn.textContent='Hantar Instrumen'}
   }
 }
 
@@ -536,7 +559,7 @@ async function viewStaff(){
   const rows=out.staff||[];
   $('#view').innerHTML=`<div class="section-title"><h2>Senarai Guru</h2><button class="btn btn-primary" id="addStaff">+ Tambah Guru</button></div>
   <div class="table-wrap"><table><thead><tr><th>Nama</th><th>Email</th><th>Jawatan</th><th>Panitia</th><th>Admin</th><th></th></tr></thead><tbody>
-    ${rows.map(s=>`<tr><td>${esc(s.nama)}</td><td>${esc(s.email)}</td><td>${esc(s.jawatan_hakiki)}</td><td>${esc(s.panitia)}</td><td>${s.is_admin?'Ya':'Tidak'}</td><td><button class="btn btn-light" data-edit="${esc(s.staff_id)}">Edit</button></td></tr>`).join('')}
+    ${rows.map(s=>`<tr><td>${esc(s.nama||s.name)}</td><td>${esc(s.email)}</td><td>${esc(s.jawatan_hakiki)}</td><td>${esc(s.panitia)}</td><td>${s.is_admin?'Ya':'Tidak'}</td><td><button class="btn btn-light" data-edit="${esc(s.staff_id)}">Edit</button></td></tr>`).join('')}
   </tbody></table></div>`;
   $('#addStaff').onclick=()=>staffModal(null);
   $$('[data-edit]').forEach(b=>b.onclick=()=>staffModal(rows.find(x=>x.staff_id===b.dataset.edit)));
@@ -605,7 +628,7 @@ function renderBundleAdmin(selectedId){
       <div class="card">
         <div class="section-title" style="margin-top:0"><h2>Pilih Guru</h2><span id="memberCount" class="badge">${selectedMembers.size} dipilih</span></div>
         <div class="toolbar"><input id="teacherSearch" placeholder="Cari nama guru…" style="max-width:320px"><button class="btn btn-light" id="selectAllVisible">Pilih Semua</button><button class="btn btn-light" id="clearAll">Kosongkan Semua</button></div>
-        <div class="teacher-check-list" id="teacherList">${staff.map(s=>`<label class="teacher-check" data-name="${esc(String(s.nama).toLowerCase())}"><input type="checkbox" class="bundle-member" value="${esc(s.staff_id)}" ${selectedMembers.has(s.staff_id)?'checked':''}><span><b>${esc(s.nama)}</b><small>${esc(s.jawatan_hakiki||'')}</small></span></label>`).join('')}</div>
+        <div class="teacher-check-list" id="teacherList">${staff.map(s=>`<label class="teacher-check" data-name="${esc(String(s.nama).toLowerCase())}"><input type="checkbox" class="bundle-member" value="${esc(s.staff_id)}" ${selectedMembers.has(s.staff_id)?'checked':''}><span><b>${esc(s.nama||s.name)}</b><small>${esc(s.jawatan_hakiki||'')}</small></span></label>`).join('')}</div>
       </div>
       <div class="bundle-savebar"><button class="btn btn-primary" id="saveBundle">Simpan Bundle</button><span class="muted">Simpan terus selaraskan tugasan tahun aktif.</span></div>
     </div>
@@ -639,7 +662,7 @@ async function viewAdminAssignments(){
 
   $('#view').innerHTML=`<div class="card">
     <div class="form-row">
-      <div><label>Guru</label><select id="aStaff">${staff.map(s=>`<option value="${esc(s.staff_id)}">${esc(s.nama)}</option>`).join('')}</select></div>
+      <div><label>Guru</label><select id="aStaff">${staff.map(s=>`<option value="${esc(s.staff_id)}">${esc(s.nama||s.name)}</option>`).join('')}</select></div>
       <div><label>Instrumen</label><select id="aInst">${inst.map(i=>`<option value="${esc(i.instrument_id)}">${esc(i.tajuk)}</option>`).join('')}</select></div>
       <div><label>Kitaran</label><select id="aCycle">${cycles.map(c=>`<option value="${esc(c.cycle_id)}">${esc(c.nama_kitaran)}</option>`).join('')}</select></div>
       <div><label>Tarikh akhir</label><input id="aDate" type="date"></div>
@@ -661,7 +684,7 @@ async function viewSubmissions(){
   const out=await get('submissions',{}, {loading:true,title:'Memuatkan Hantaran…',desc:'Sedang mendapatkan rekod hantaran.'});
   const rows=out.submissions||[];
   $('#view').innerHTML=`<div class="table-wrap"><table><thead><tr><th>Guru</th><th>Instrumen</th><th>Status</th><th>Tarikh Hantar</th><th>PDF</th><th>Tindakan</th></tr></thead><tbody>
-  ${rows.map(r=>`<tr><td>${esc(r.staff_name)}</td><td>${esc(r.instrument_title||r.instrument_id)}</td><td><span class="badge ${r.status==='SUBMITTED'?'ok':'warn'}">${esc(r.status)}</span></td><td>${esc(r.tarikh_hantar||'-')}</td><td>${r.pdf_url?`<a class="btn btn-light" target="_blank" href="${esc(r.pdf_url)}">Buka</a>`:(r.status==='SUBMITTED'?`<button class="btn btn-light" data-gen-pdf="${esc(r.submission_id)}">Jana PDF</button>`:'-')}</td><td>${r.status==='DRAFT'?`<button class="btn btn-danger" data-del-draft="${esc(r.submission_id)}">Padam Draf</button>`:'-'}</td></tr>`).join('')}
+  ${rows.map(r=>`<tr><td>${esc(r.staff_name)}</td><td>${esc(r.instrument_title||r.instrument_id)}</td><td><span class="badge ${r.status==='SUBMITTED'?'ok':'warn'}">${esc(r.status)}</span></td><td>${esc(r.tarikh_hantar||'-')}</td><td>${r.pdf_url?`<a class="btn btn-light" target="_blank" href="${esc(r.pdf_url)}">Buka</a>`:(r.status==='SUBMITTED'?'<span class="muted">PDF migrasi</span>':'-')}</td><td>${r.status==='DRAFT'?`<button class="btn btn-danger" data-del-draft="${esc(r.submission_id)}">Padam Draf</button>`:'-'}</td></tr>`).join('')}
   </tbody></table></div>`;
   $$('[data-del-draft]').forEach(b=>b.onclick=async()=>{
     if(!confirm('Padam draf ini?')) return;
@@ -669,13 +692,6 @@ async function viewSubmissions(){
     if(!res.ok){toast(res.message||res.error||'Gagal padam draf.');return}
     toast('Draf dipadam.');
     await viewSubmissions();
-  });  $$('[data-gen-pdf]').forEach(b=>b.onclick=async()=>{
-    try{
-      const res=await post('generate_pdf',{submission_id:b.dataset.genPdf},{loading:true,title:'Menjana PDF…',desc:'Sedang menyediakan PDF hantaran.',timeoutMs:90000});
-      if(!res.ok){toast(res.message||res.error||'Gagal jana PDF.');return}
-      toast('PDF berjaya dijana.');
-      await viewSubmissions();
-    }catch(err){toast('PDF mengambil masa terlalu lama. Cuba jana semula.')}
   });
 }
 
@@ -684,17 +700,17 @@ async function viewSettings(){
   if(!state.boot) await loadBoot();
   const sessions=state.boot.sessions||[];
   $('#view').innerHTML=`<div class="grid grid2">
-    <div class="card"><h2>Buka Tahun Baharu</h2><p class="muted">Folder Drive, sesi dan kitaran pertama akan dijana automatik.</p>
+    <div class="card"><h2>Buka Tahun Baharu</h2><p class="muted">Sesi, kitaran dan tugasan bundle akan dijana automatik dalam Neon.</p>
       <div class="toolbar"><input id="newYear" type="number" min="2026" max="2100" value="${Number(state.boot.config.TAHUN_AKTIF||2026)+1}" style="max-width:160px"><button id="openYear" class="btn btn-primary">Buka Tahun</button></div>
     </div>
-    <div class="card"><h2>Sesi Tersedia</h2>${sessions.map(s=>`<div>${esc(s.nama)} <span class="badge ${s.session_id===state.boot.config.ACTIVE_SESSION_ID?'ok':'gray'}">${s.session_id===state.boot.config.ACTIVE_SESSION_ID?'AKTIF':'ARKIB'}</span></div>`).join('<hr>')}</div>
+    <div class="card"><h2>Sesi Tersedia</h2>${sessions.map(s=>`<div>${esc(s.nama||s.name)} <span class="badge ${s.session_id===state.boot.config.ACTIVE_SESSION_ID?'ok':'gray'}">${s.session_id===state.boot.config.ACTIVE_SESSION_ID?'AKTIF':'ARKIB'}</span></div>`).join('<hr>')}</div>
   </div>`;
   $('#openYear').onclick=async()=>{
     const y=Number($('#newYear').value);
     if(!confirm(`Buka sesi ${y}?`))return;
     const out=await post('open_year',{tahun:y});
     if(!out.ok){toast(out.message||out.error);return}
-    toast(out.created?`Sesi ${y} berjaya dicipta.`:`Sesi ${y} sudah wujud dan kini aktif.`);
+    toast(`Sesi ${y} kini aktif. ${out.assignments_created||0} tugasan bundle disediakan.`);
     await loadBoot(); viewSettings();
   };
 }
