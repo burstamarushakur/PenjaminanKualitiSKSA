@@ -104,3 +104,24 @@ radial-gradient(circle at 60% 74%,rgba(69,201,255,.85) 0 5px,transparent 6px);ba
 button:disabled{opacity:.65;cursor:wait}
 
 .bundle-layout{display:grid;grid-template-columns:260px minmax(0,1fr);gap:18px;align-items:start}.bundle-side{position:sticky;top:20px}.bundle-list{display:grid;gap:8px}.bundle-choice{width:100%;border:1px solid var(--line);background:#fff;border-radius:12px;padding:12px;text-align:left;color:var(--text)}.bundle-choice:hover,.bundle-choice.active{border-color:var(--primary);background:#eff6ff}.bundle-choice b{display:block;font-size:13px}.bundle-choice small{display:block;color:var(--muted);margin-top:4px}.instrument-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.check-card,.teacher-check{display:flex;align-items:flex-start;gap:10px;border:1px solid var(--line);border-radius:12px;padding:12px;cursor:pointer;background:#fff}.check-card:has(input:checked),.teacher-check:has(input:checked){border-color:var(--primary);background:#eff6ff}.check-card input,.teacher-check input,.inline-check input{width:auto;margin-top:3px}.check-card span,.teacher-check span{display:grid;gap:3px}.check-card small,.teacher-check small{color:var(--muted)}.teacher-check-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px;max-height:520px;overflow:auto;padding-right:4px}.bundle-savebar{position:sticky;bottom:12px;background:#fff;border:1px solid var(--line);box-shadow:var(--shadow);border-radius:14px;padding:12px;display:flex;align-items:center;gap:12px;z-index:10}.inline-check{display:inline-flex;gap:7px;align-items:center;margin:0}@media(max-width:900px){.bundle-layout{grid-template-columns:1fr}.bundle-side{position:relative;top:auto}.instrument-grid,.teacher-check-list{grid-template-columns:1fr}}
+
+
+.global-loader{position:fixed;inset:0;z-index:10000;display:grid;place-items:center;background:rgba(4,18,44,.62);backdrop-filter:blur(4px)}
+.loader-card{min-width:min(360px,92vw);display:grid;justify-items:center;gap:18px;padding:26px 28px;border-radius:28px;background:rgba(10,23,53,.78);border:1px solid rgba(134,181,255,.22);box-shadow:0 30px 90px rgba(0,0,0,.35),inset 0 0 0 1px rgba(255,255,255,.03)}
+.loader-orbit{position:relative;width:170px;height:170px;display:grid;place-items:center}
+.loader-logo-wrap{position:relative;z-index:3;width:82px;height:82px;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.95);box-shadow:0 0 0 6px rgba(89,179,255,.14),0 0 28px rgba(80,194,255,.35)}
+.loader-logo{width:64px;height:64px;object-fit:contain}
+.loader-ring{position:absolute;border-radius:50%;border-style:solid;filter:drop-shadow(0 0 10px rgba(92,197,255,.55))}
+.loader-ring.ring-a{inset:0;border-width:2px;border-color:rgba(0,0,0,0) rgba(79,214,255,.95) rgba(0,0,0,0) rgba(184,89,255,.95);animation:spinA 1.8s linear infinite}
+.loader-ring.ring-b{inset:14px;border-width:2px;border-color:rgba(255,123,90,.95) rgba(0,0,0,0) rgba(82,164,255,.95) rgba(0,0,0,0);animation:spinB 1.15s linear infinite}
+.loader-ring.ring-c{inset:28px;border-width:3px;border-color:rgba(0,0,0,0) rgba(110,227,255,.92) rgba(0,0,0,0) rgba(0,0,0,0);animation:spinA 1.45s linear infinite reverse;opacity:.95}
+.loader-spark{position:absolute;width:14px;height:14px;border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.95) 0 25%,rgba(80,208,255,.95) 26% 55%,rgba(80,208,255,0) 56%);box-shadow:0 0 18px rgba(80,208,255,.95)}
+.loader-spark.spark-a{top:12px;left:50%;transform:translateX(-50%);animation:orbitSpark1 1.7s linear infinite}
+.loader-spark.spark-b{bottom:18px;left:50%;transform:translateX(-50%);animation:orbitSpark2 2.1s linear infinite}
+.loader-text{display:grid;gap:6px;text-align:center;color:#fff}
+.loader-text strong{font-size:20px;letter-spacing:.02em}
+.loader-text span{font-size:13px;color:#cbd5e1}
+@keyframes spinA{to{transform:rotate(360deg)}}
+@keyframes spinB{to{transform:rotate(-360deg)}}
+@keyframes orbitSpark1{0%{transform:rotate(0deg) translateY(-78px) rotate(0deg)}100%{transform:rotate(360deg) translateY(-78px) rotate(-360deg)}}
+@keyframes orbitSpark2{0%{transform:rotate(0deg) translateY(-56px) rotate(0deg)}100%{transform:rotate(-360deg) translateY(-56px) rotate(360deg)}}

@@ -22,7 +22,45 @@ function toast(msg){
   $('#toast').appendChild(el); setTimeout(()=>el.remove(),3500);
 }
 
-async function get(action, params={}){
+function ensureLoader(){
+  let el=$('#globalLoader');
+  if(el) return el;
+  el=document.createElement('div');
+  el.id='globalLoader';
+  el.className='global-loader hidden';
+  el.innerHTML=`<div class="loader-card">
+    <div class="loader-orbit">
+      <div class="loader-ring ring-a"></div>
+      <div class="loader-ring ring-b"></div>
+      <div class="loader-ring ring-c"></div>
+      <div class="loader-spark spark-a"></div>
+      <div class="loader-spark spark-b"></div>
+      <div class="loader-logo-wrap">
+        <img src="https://i.postimg.cc/3RF9M05N/Logo-SKSA.png" alt="Logo SKSA" class="loader-logo">
+      </div>
+    </div>
+    <div class="loader-text">
+      <strong id="globalLoaderTitle">Memuatkan Sistem…</strong>
+      <span id="globalLoaderDesc">Sila tunggu sebentar.</span>
+    </div>
+  </div>`;
+  document.body.appendChild(el);
+  return el;
+}
+
+function showLoader(title='Memuatkan Sistem…', desc='Sila tunggu sebentar.'){
+  const el=ensureLoader();
+  $('#globalLoaderTitle',el).textContent=title;
+  $('#globalLoaderDesc',el).textContent=desc;
+  el.classList.remove('hidden');
+}
+
+function hideLoader(){
+  const el=$('#globalLoader');
+  if(el) el.classList.add('hidden');
+}
+
+async function get(action, params={}, opts={}){
   const u=new URL(API);
   u.searchParams.set('action',action);
   if(state.token) u.searchParams.set('token',state.token);
@@ -63,8 +101,10 @@ async function start(){
   }
 
   // Jika pernah login, shell + tugasan cache dipaparkan serta-merta.
+  showLoader('Memuatkan Sistem…','Menyediakan paparan anda.');
   state.route='assignments';
   renderShell();
+  hideLoader();
 
   // Semak token / refresh tugasan di belakang.
   refreshAssignments(true).catch(()=>{
@@ -115,7 +155,7 @@ async function renderLogin(){
     btn.disabled=true; btn.textContent='Menyemak…';
     let out;
     try{
-      out=await post('login_ic',{ic});
+      out=await post('login_ic',{ic},{loading:true,title:'Mengesahkan Identiti…',desc:'Sedang menyemak No. Kad Pengenalan anda.'});
     }catch(err){
       btn.disabled=false; btn.textContent='Masuk';
       toast('Sambungan backend lambat/gagal. Cuba semula.');
@@ -243,7 +283,7 @@ function renderAssignmentRows(rows){
 }
 
 async function refreshAssignments(silent=false){
-  const out=await get('assignments');
+  const out=await get('assignments',{}, silent?{}:{loading:true,title:'Memuatkan Instrumen…',desc:'Sedang mendapatkan tugasan instrumen anda.'});
   if(!out.ok) throw new Error(out.message||out.error||'Gagal memuat tugasan.');
   state.assignments=out.assignments||[];
   localStorage.setItem('pk_assignments',JSON.stringify(state.assignments));
@@ -268,7 +308,7 @@ async function openAssignment(id,rows){
   }
 
   // SPEED: satu request sahaja untuk start submission + items + responses.
-  const out=await post('open_assignment',{assignment_id:id});
+  const out=await post('open_assignment',{assignment_id:id},{loading:true,title:'Membuka Instrumen…',desc:'Sedang memuatkan borang dan item penjaminan kualiti.'});
   if(!out.ok){toast(out.message||out.error||'Gagal membuka instrumen.'); return}
 
   state.currentAssignment=out.assignment;
@@ -367,7 +407,7 @@ async function submitCurrent(){
     toast('Jawab sekurang-kurangnya satu item dahulu sebelum hantar.');
     return;
   }
-  const out=await post('submit_submission',{submission_id:state.currentSubmission.submission_id,nama_penandatangan:signer});
+  const out=await post('submit_submission',{submission_id:state.currentSubmission.submission_id,nama_penandatangan:signer},{loading:true,title:'Menghantar Instrumen…',desc:'Sedang menjana hantaran dan PDF.'});
   if(!out.ok){
     if(out.error==='INCOMPLETE') toast(`Masih ada ${out.missing_item_ids.length} item wajib belum dijawab.`);
     else toast(out.message||out.error);
@@ -379,7 +419,7 @@ async function submitCurrent(){
 
 async function viewStaff(){
   title('Pengurusan Guru');
-  const out=await get('staff');
+  const out=await get('staff',{}, {loading:true,title:'Memuatkan Senarai Guru…',desc:'Sedang mendapatkan data guru.'});
   const rows=out.staff||[];
   $('#view').innerHTML=`<div class="section-title"><h2>Senarai Guru</h2><button class="btn btn-primary" id="addStaff">+ Tambah Guru</button></div>
   <div class="table-wrap"><table><thead><tr><th>Nama</th><th>Email</th><th>Jawatan</th><th>Panitia</th><th>Admin</th><th></th></tr></thead><tbody>
@@ -411,7 +451,7 @@ function staffModal(s){
     };
     if($('#sIc') && $('#sIc').value.trim()) payload.ic=$('#sIc').value.trim();
     if($('#sPin') && $('#sPin').value.trim()) payload.pin=$('#sPin').value.trim();
-    const out=await post('upsert_staff',payload);
+    const out=await post('upsert_staff',payload,{loading:true,title:'Menyimpan Guru…',desc:'Sedang mengemaskini rekod guru.'});
     if(!out.ok){toast(out.message||out.error);return}
     closeModal(); toast('Guru disimpan.'); viewStaff();
   };
@@ -420,7 +460,7 @@ function staffModal(s){
 async function viewBundles(){
   title('Tetapan Bundle Peranan');
   $('#view').innerHTML=`<div class="card loading-card"><div class="spinner"></div><b>Memuatkan bundle…</b></div>`;
-  const out=await get('bundles');
+  const out=await get('bundles',{}, {loading:true,title:'Memuatkan Bundle Peranan…',desc:'Sedang mendapatkan tetapan bundle.'});
   if(!out.ok){toast(out.message||out.error||'Gagal memuat bundle.');return}
   state.bundleAdmin={bundles:out.bundles||[],staff:out.staff||[],instruments:out.instruments||[]};
   const first=state.bundleAdmin.bundles.find(b=>b.bundle_id==='BUNDLE-KETUA-PANITIA')||state.bundleAdmin.bundles[0]||null;
@@ -469,11 +509,11 @@ function renderBundleAdmin(selectedId){
     const name=$('#bundleName').value.trim();if(!name){toast('Masukkan nama bundle.');return}
     const btn=$('#saveBundle');btn.disabled=true;btn.textContent='Menyimpan…';
     const payload={bundle_id:bundle.bundle_id||'',nama_bundle:name,keterangan:$('#bundleDesc').value.trim(),aktif:$('#bundleActive').checked,carry_forward:$('#bundleCarry').checked,member_ids:$$('.bundle-member:checked').map(x=>x.value),instrument_ids:$$('.bundle-inst:checked').map(x=>x.value)};
-    const saved=await post('save_bundle',payload);btn.disabled=false;btn.textContent='Simpan Bundle';
+    const saved=await post('save_bundle',payload,{loading:true,title:'Menyimpan Bundle…',desc:'Sedang menyelaras ahli dan instrumen.'});btn.disabled=false;btn.textContent='Simpan Bundle';
     if(!saved.ok){toast(saved.message||saved.error||'Gagal simpan bundle.');return}
     toast(`Bundle disimpan. ${saved.assignments_created||0} tugasan baharu.`);await viewBundles();
   };
-  if($('#deactivateBundle')) $('#deactivateBundle').onclick=async()=>{if(!confirm(`Nyahaktif bundle "${bundle.nama_bundle}"?`))return;const r=await post('deactivate_bundle',{bundle_id:bundle.bundle_id});if(!r.ok){toast(r.message||r.error);return}toast('Bundle dinyahaktif.');await viewBundles()};
+  if($('#deactivateBundle')) $('#deactivateBundle').onclick=async()=>{if(!confirm(`Nyahaktif bundle "${bundle.nama_bundle}"?`))return;const r=await post('deactivate_bundle',{bundle_id:bundle.bundle_id},{loading:true,title:'Menyahaktif Bundle…',desc:'Sedang mengemaskini tetapan bundle.'});if(!r.ok){toast(r.message||r.error);return}toast('Bundle dinyahaktif.');await viewBundles()};
 }
 
 async function viewAdminAssignments(){
@@ -505,14 +545,14 @@ async function viewAdminAssignments(){
 
 async function viewSubmissions(){
   title('Hantaran');
-  const out=await get('submissions');
+  const out=await get('submissions',{}, {loading:true,title:'Memuatkan Hantaran…',desc:'Sedang mendapatkan rekod hantaran.'});
   const rows=out.submissions||[];
   $('#view').innerHTML=`<div class="table-wrap"><table><thead><tr><th>Guru</th><th>Instrumen</th><th>Status</th><th>Tarikh Hantar</th><th>PDF</th><th>Tindakan</th></tr></thead><tbody>
   ${rows.map(r=>`<tr><td>${esc(r.staff_name)}</td><td>${esc(r.instrument_title||r.instrument_id)}</td><td><span class="badge ${r.status==='SUBMITTED'?'ok':'warn'}">${esc(r.status)}</span></td><td>${esc(r.tarikh_hantar||'-')}</td><td>${r.pdf_url?`<a class="btn btn-light" target="_blank" href="${esc(r.pdf_url)}">Buka</a>`:'-'}</td><td>${r.status==='DRAFT'?`<button class="btn btn-danger" data-del-draft="${esc(r.submission_id)}">Padam Draf</button>`:'-'}</td></tr>`).join('')}
   </tbody></table></div>`;
   $$('[data-del-draft]').forEach(b=>b.onclick=async()=>{
     if(!confirm('Padam draf ini?')) return;
-    const res=await post('delete_submission',{submission_id:b.dataset.delDraft});
+    const res=await post('delete_submission',{submission_id:b.dataset.delDraft},{loading:true,title:'Memadam Draf…',desc:'Sedang membuang rekod draf ujian.'});
     if(!res.ok){toast(res.message||res.error||'Gagal padam draf.');return}
     toast('Draf dipadam.');
     await viewSubmissions();
