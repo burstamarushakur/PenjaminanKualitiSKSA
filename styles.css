@@ -137,3 +137,14 @@ button:disabled{opacity:.65;cursor:wait}
 #signaturePad{display:block;position:relative;z-index:1;cursor:crosshair;touch-action:none;background:transparent}
 .signature-summary{display:flex;flex-direction:column;gap:4px}
 @media(max-width:640px){.signature-head{align-items:flex-start;flex-direction:column}.signature-head .btn{width:100%}}
+
+
+/* v2.1 dashboard actions */
+.stat-link{appearance:none;width:100%;text-align:left;color:inherit;transition:transform .15s ease,border-color .15s ease,box-shadow .15s ease}
+.stat-link:hover{transform:translateY(-2px);border-color:#9dbcf3;box-shadow:0 14px 34px rgba(15,91,216,.12)}
+.stat-link small{display:block;margin-top:8px;color:#94a3b8;font-size:11px;font-weight:600}
+.dashboard-session{cursor:pointer;transition:border-color .15s ease,box-shadow .15s ease}
+.dashboard-session:hover{border-color:#9dbcf3;box-shadow:0 14px 34px rgba(15,91,216,.10)}
+.btn-update{background:#e0f2fe;color:#075985}
+.filterbar{margin-bottom:12px}
+.table-wrap .toolbar{min-width:max-content}

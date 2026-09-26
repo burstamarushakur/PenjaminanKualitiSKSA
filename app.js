@@ -24,7 +24,8 @@ const state = {
   currentItems: [],
   currentResponses: {},
   saveTimer: null,
-  signatureHasInk: false
+  signatureHasInk: false,
+  submissionFilter: 'ALL'
 };
 
 const $ = (sel, root=document) => root.querySelector(sel);
@@ -100,6 +101,9 @@ async function get(action, params={}, opts={}){
     if(action==='staff') return await rpc_('pk_admin_staff',{p_token:state.token});
     if(action==='bundles') return await rpc_('pk_bundle_data',{p_token:state.token});
     if(action==='submissions') return await rpc_('pk_admin_submissions',{p_token:state.token});
+    if(action==='admin_assignments') return await rpc_('pk_admin_assignments',{p_token:state.token});
+    if(action==='followups') return await rpc_('pk_admin_followups',{p_token:state.token});
+    if(action==='submission_detail') return await rpc_('pk_submission_detail',{p_token:state.token,p_submission_id:params.submission_id});
     return {ok:false,error:'UNKNOWN_ACTION',action};
   }finally{
     if(loading) hideLoader();
@@ -139,9 +143,9 @@ async function post(action,payload={},opts={}){
       p_token:state.token,p_staff_id:payload.staff_id,p_instrument_id:payload.instrument_id,
       p_cycle_id:payload.cycle_id||null,p_due_date:payload.tarikh_akhir||null
     });
-    if(action==='delete_submission') return await rpc_('pk_delete_draft',{p_token:state.token,p_submission_id:payload.submission_id});
+    if(action==='reopen_submission') return await rpc_('pk_reopen_submission',{p_token:state.token,p_submission_id:payload.submission_id});
+    if(action==='delete_submission') return await rpc_('pk_delete_submission_secure',{p_token:state.token,p_submission_id:payload.submission_id,p_ic:payload.ic||''});
     if(action==='open_year') return await rpc_('pk_open_year',{p_token:state.token,p_year:Number(payload.tahun)});
-    if(action==='generate_pdf') return {ok:false,error:'PDF_MIGRATION_PENDING',message:'PDF sedang dipindahkan ke Neon Storage. Hantaran anda tetap selamat.'};
     return {ok:false,error:'UNKNOWN_ACTION',action};
   }finally{
     if(loading) hideLoader();
@@ -258,6 +262,7 @@ function renderShell(){
         <button data-route="bundles">Bundle Peranan</button>
         <button data-route="adminAssignments">Tugasan Manual</button>
         <button data-route="submissions">Hantaran</button>
+        <button data-route="followups">Tindakan Susulan</button>
         <button data-route="settings">Tahun / Tetapan</button>`:''}
         <button id="logoutBtn">Log Keluar</button>
       </div>
@@ -285,6 +290,7 @@ function go(route){
   if(route==='bundles') return viewBundles();
   if(route==='adminAssignments') return viewAdminAssignments();
   if(route==='submissions') return viewSubmissions();
+  if(route==='followups') return viewFollowups();
   if(route==='settings') return viewSettings();
 }
 
@@ -296,23 +302,33 @@ async function viewDashboard(){
   const d=await get('dashboard');
   const s=d.stats||{};
   $('#view').innerHTML=`<div class="grid grid4">
-    ${stat('Tugasan',s.assignments||0)}
-    ${stat('Selesai',s.submitted||0)}
-    ${stat('Draf',s.draft||0)}
-    ${stat('Tindakan Susulan',s.open_followups||0)}
+    ${stat('Tugasan',s.assignments||0,'adminAssignments')}
+    ${stat('Selesai',s.submitted||0,'submissions','SUBMITTED')}
+    ${stat('Draf',s.draft||0,'submissions','DRAFT')}
+    ${stat('Tindakan Susulan',s.open_followups||0,'followups')}
   </div>
   <div class="section-title"><h2>Sesi Aktif</h2></div>
-  <div class="card">
+  <div class="card dashboard-session" data-dashboard-route="settings">
     <b>${esc(state.boot.active_session?.nama||state.boot.active_session?.name||'-')}</b>
     <p class="muted">Tahun aktif: ${esc(state.boot.config.TAHUN_AKTIF||'-')}</p>
     <div class="toolbar">
-      <button class="btn btn-primary" onclick="go('assignments')">Buka Instrumen Saya</button>
+      <button class="btn btn-primary" id="openMyInstruments">Buka Instrumen Saya</button>
+      <span class="muted">Klik kad sesi untuk buka Tahun / Tetapan.</span>
     </div>
   </div>`;
+
+  $$('[data-dashboard-route]').forEach(el=>el.onclick=e=>{
+    if(e.target.closest('button')) return;
+    const route=el.dataset.dashboardRoute;
+    const filter=el.dataset.dashboardFilter||'ALL';
+    if(route==='submissions') state.submissionFilter=filter;
+    go(route);
+  });
+  $('#openMyInstruments').onclick=e=>{e.stopPropagation();go('assignments')};
 }
 
-function stat(label,value){
-  return `<div class="card stat"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`;
+function stat(label,value,route,filter='ALL'){
+  return `<button class="card stat stat-link" data-dashboard-route="${esc(route)}" data-dashboard-filter="${esc(filter)}"><span>${esc(label)}</span><strong>${esc(value)}</strong><small>Klik untuk buka</small></button>`;
 }
 
 async function viewAssignments(){
@@ -329,7 +345,7 @@ function renderAssignmentRows(rows){
   const view=$('#view');
   if(!view) return;
 
-  if(rows.length===1){
+  if(rows.length===1 && !(rows[0].submission?.status==='SUBMITTED')){
     view.innerHTML=`<div class="card loading-card">
       <div class="spinner"></div>
       <b>Membuka instrumen…</b>
@@ -342,18 +358,24 @@ function renderAssignmentRows(rows){
   view.innerHTML=`<div class="stack" id="assignmentList">
     ${rows.length?rows.map(a=>{
       const st=a.submission?.status||a.status||'OPEN';
+      const sid=a.submission?.submission_id||'';
       return `<div class="assignment">
         <div><h3>${esc(a.instrument?.tajuk||a.instrument_id)}</h3>
         <p>${esc(a.instrument_id)} · ${esc(a.cycle_id||'')}</p></div>
         <div class="toolbar">
           <span class="badge ${st==='SUBMITTED'?'ok':st==='DRAFT'?'warn':'gray'}">${esc(st)}</span>
-          ${a.submission?.pdf_url?`<a class="btn btn-light" target="_blank" href="${esc(a.submission.pdf_url)}">PDF</a>`:''}
+          ${st==='SUBMITTED'&&sid?`<button class="btn btn-light" data-pdf="${esc(sid)}">Muat Turun PDF</button>`:''}
           <button class="btn btn-primary" data-open="${esc(a.assignment_id)}">${st==='SUBMITTED'?'Lihat':'Isi'}</button>
+          ${st==='SUBMITTED'&&sid?`<button class="btn btn-light btn-update" data-reopen="${esc(sid)}" data-assignment="${esc(a.assignment_id)}">KEMASKINI</button>`:''}
+          ${sid?`<button class="btn btn-danger" data-delete-sub="${esc(sid)}">PADAM</button>`:''}
         </div>
       </div>`;
     }).join(''):`<div class="card muted">Belum ada tugasan instrumen untuk anda.</div>`}
   </div>`;
   $$('[data-open]').forEach(b=>b.onclick=()=>openAssignment(b.dataset.open,rows));
+  $$('[data-pdf]').forEach(b=>b.onclick=()=>downloadSubmissionPdf(b.dataset.pdf));
+  $$('[data-reopen]').forEach(b=>b.onclick=()=>reopenOwnSubmission(b.dataset.reopen,b.dataset.assignment));
+  $$('[data-delete-sub]').forEach(b=>b.onclick=()=>requestDeleteSubmission(b.dataset.deleteSub,()=>viewAssignments()));
 }
 
 async function refreshAssignments(silent=false){
@@ -411,7 +433,7 @@ function renderForm(a,sub){
     <button class="btn btn-light" id="backAssign">← Kembali</button>
     <span class="badge ${locked?'ok':'gray'}">${esc(status)}</span>
     <span id="saveState" class="muted"></span>
-    ${sub?.pdf_url?`<a href="${esc(sub.pdf_url)}" target="_blank" class="btn btn-light">Buka PDF</a>`:''}
+    ${locked&&sub?.submission_id?`<button class="btn btn-light" id="downloadOwnPdf">Muat Turun PDF</button><button class="btn btn-light btn-update" id="reopenOwn">KEMASKINI</button><button class="btn btn-danger" id="deleteOwn">PADAM</button>`:''}
   </div>
   <div class="card">${html}</div>
   ${locked?`<div class="card signature-summary" style="margin-top:16px">
@@ -430,6 +452,11 @@ function renderForm(a,sub){
   </div>`}`;
 
   $('#backAssign').onclick=()=>viewAssignments();
+  if(locked&&sub?.submission_id){
+    $('#downloadOwnPdf').onclick=()=>downloadSubmissionPdf(sub.submission_id);
+    $('#reopenOwn').onclick=()=>reopenOwnSubmission(sub.submission_id,a.assignment_id);
+    $('#deleteOwn').onclick=()=>requestDeleteSubmission(sub.submission_id,()=>viewAssignments());
+  }
   if(!locked){
     $$('[data-item]').forEach(el=>{
       el.onchange=handleAnswerChange;
@@ -655,44 +682,165 @@ function renderBundleAdmin(selectedId){
 async function viewAdminAssignments(){
   title('Tugasan Instrumen');
   if(!state.boot) await loadBoot();
-  const [staffOut,own] = await Promise.all([get('staff'), get('assignments',{staff_id:state.user.staff_id})]);
+  const [staffOut,asgnOut]=await Promise.all([get('staff'),get('admin_assignments',{}, {loading:true,title:'Memuatkan Tugasan…',desc:'Sedang mendapatkan semua tugasan sesi aktif.'})]);
   const staff=staffOut.staff||[];
+  const rows=asgnOut.assignments||[];
   const inst=state.boot.instruments||[];
   const cycles=state.boot.cycles||[];
 
   $('#view').innerHTML=`<div class="card">
+    <h2 style="margin-top:0">Cipta Tugasan Manual</h2>
     <div class="form-row">
       <div><label>Guru</label><select id="aStaff">${staff.map(s=>`<option value="${esc(s.staff_id)}">${esc(s.nama||s.name)}</option>`).join('')}</select></div>
       <div><label>Instrumen</label><select id="aInst">${inst.map(i=>`<option value="${esc(i.instrument_id)}">${esc(i.tajuk)}</option>`).join('')}</select></div>
-      <div><label>Kitaran</label><select id="aCycle">${cycles.map(c=>`<option value="${esc(c.cycle_id)}">${esc(c.nama_kitaran)}</option>`).join('')}</select></div>
+      <div><label>Kitaran</label><select id="aCycle">${cycles.map(c=>`<option value="${esc(c.cycle_id)}">${esc(c.nama_kitaran||c.name||c.cycle_id)}</option>`).join('')}</select></div>
       <div><label>Tarikh akhir</label><input id="aDate" type="date"></div>
     </div>
     <div class="toolbar" style="margin-top:14px"><button id="createAsn" class="btn btn-primary">Cipta Tugasan</button></div>
   </div>
-  <div class="section-title"><h2>Tip</h2></div>
-  <div class="card muted">Gunakan tugasan untuk menentukan instrumen mana perlu diisi oleh setiap guru. Sistem akan pilih versi instrumen yang aktif untuk tahun semasa.</div>`;
+  <div class="section-title"><h2>Semua Tugasan (${rows.length})</h2></div>
+  <div class="table-wrap"><table><thead><tr><th>Guru</th><th>Instrumen</th><th>Status Tugasan</th><th>Status Hantaran</th><th>Tarikh Hantar</th></tr></thead><tbody>
+  ${rows.map(r=>`<tr><td>${esc(r.staff_name)}</td><td>${esc(r.instrument_title||r.instrument_id)}</td><td>${esc(r.status)}</td><td><span class="badge ${r.submission_status==='SUBMITTED'?'ok':r.submission_status==='DRAFT'?'warn':'gray'}">${esc(r.submission_status||'BELUM ISI')}</span></td><td>${formatDateTime(r.submitted_at)}</td></tr>`).join('')}
+  </tbody></table></div>`;
   $('#createAsn').onclick=async()=>{
-    const out=await post('create_assignment',{
-      staff_id:$('#aStaff').value,instrument_id:$('#aInst').value,cycle_id:$('#aCycle').value,tarikh_akhir:$('#aDate').value
-    });
+    const out=await post('create_assignment',{staff_id:$('#aStaff').value,instrument_id:$('#aInst').value,cycle_id:$('#aCycle').value,tarikh_akhir:$('#aDate').value},{loading:true,title:'Mencipta Tugasan…',desc:'Sedang menyimpan tugasan baharu.'});
     toast(out.ok?(out.created?'Tugasan dicipta.':'Tugasan sudah wujud.'):(out.message||out.error));
+    if(out.ok) await viewAdminAssignments();
   };
 }
 
 async function viewSubmissions(){
   title('Hantaran');
   const out=await get('submissions',{}, {loading:true,title:'Memuatkan Hantaran…',desc:'Sedang mendapatkan rekod hantaran.'});
-  const rows=out.submissions||[];
-  $('#view').innerHTML=`<div class="table-wrap"><table><thead><tr><th>Guru</th><th>Instrumen</th><th>Status</th><th>Tarikh Hantar</th><th>PDF</th><th>Tindakan</th></tr></thead><tbody>
-  ${rows.map(r=>`<tr><td>${esc(r.staff_name)}</td><td>${esc(r.instrument_title||r.instrument_id)}</td><td><span class="badge ${r.status==='SUBMITTED'?'ok':'warn'}">${esc(r.status)}</span></td><td>${esc(r.tarikh_hantar||'-')}</td><td>${r.pdf_url?`<a class="btn btn-light" target="_blank" href="${esc(r.pdf_url)}">Buka</a>`:(r.status==='SUBMITTED'?'<span class="muted">PDF migrasi</span>':'-')}</td><td>${r.status==='DRAFT'?`<button class="btn btn-danger" data-del-draft="${esc(r.submission_id)}">Padam Draf</button>`:'-'}</td></tr>`).join('')}
+  const all=out.submissions||[];
+  const filter=state.submissionFilter||'ALL';
+  const rows=filter==='ALL'?all:all.filter(r=>String(r.status).toUpperCase()===filter);
+  $('#view').innerHTML=`<div class="toolbar filterbar">
+    <button class="btn ${filter==='ALL'?'btn-primary':'btn-light'}" data-sub-filter="ALL">Semua (${all.length})</button>
+    <button class="btn ${filter==='SUBMITTED'?'btn-primary':'btn-light'}" data-sub-filter="SUBMITTED">Selesai (${all.filter(r=>r.status==='SUBMITTED').length})</button>
+    <button class="btn ${filter==='DRAFT'?'btn-primary':'btn-light'}" data-sub-filter="DRAFT">Draf (${all.filter(r=>r.status==='DRAFT').length})</button>
+  </div>
+  <div class="table-wrap"><table><thead><tr><th>Guru</th><th>Instrumen</th><th>Status</th><th>Tarikh Hantar</th><th>PDF</th><th>Tindakan</th></tr></thead><tbody>
+  ${rows.map(r=>{
+    const own=String(r.staff_id)===String(state.user.staff_id);
+    return `<tr><td>${esc(r.staff_name)}</td><td>${esc(r.instrument_title||r.instrument_id)}</td><td><span class="badge ${r.status==='SUBMITTED'?'ok':'warn'}">${esc(r.status)}</span></td><td>${formatDateTime(r.tarikh_hantar)}</td><td>${r.status==='SUBMITTED'?`<button class="btn btn-light" data-pdf="${esc(r.submission_id)}">Muat Turun PDF</button>`:'-'}</td><td><div class="toolbar">${own&&r.status==='SUBMITTED'?`<button class="btn btn-light btn-update" data-reopen="${esc(r.submission_id)}" data-assignment="${esc(r.assignment_id)}">KEMASKINI</button>`:''}<button class="btn btn-danger" data-delete-sub="${esc(r.submission_id)}">PADAM</button></div></td></tr>`;
+  }).join('')}
   </tbody></table></div>`;
-  $$('[data-del-draft]').forEach(b=>b.onclick=async()=>{
-    if(!confirm('Padam draf ini?')) return;
-    const res=await post('delete_submission',{submission_id:b.dataset.delDraft},{loading:true,title:'Memadam Draf…',desc:'Sedang membuang rekod draf ujian.'});
-    if(!res.ok){toast(res.message||res.error||'Gagal padam draf.');return}
-    toast('Draf dipadam.');
-    await viewSubmissions();
-  });
+  $$('[data-sub-filter]').forEach(b=>b.onclick=()=>{state.submissionFilter=b.dataset.subFilter;viewSubmissions()});
+  $$('[data-pdf]').forEach(b=>b.onclick=()=>downloadSubmissionPdf(b.dataset.pdf));
+  $$('[data-reopen]').forEach(b=>b.onclick=()=>reopenOwnSubmission(b.dataset.reopen,b.dataset.assignment));
+  $$('[data-delete-sub]').forEach(b=>b.onclick=()=>requestDeleteSubmission(b.dataset.deleteSub,()=>viewSubmissions()));
+}
+
+async function viewFollowups(){
+  title('Tindakan Susulan');
+  const out=await get('followups',{}, {loading:true,title:'Memuatkan Tindakan Susulan…',desc:'Sedang mendapatkan tindakan susulan terbuka.'});
+  const rows=out.followups||[];
+  $('#view').innerHTML=rows.length?`<div class="table-wrap"><table><thead><tr><th>Guru</th><th>Instrumen</th><th>Dapatan</th><th>Tindakan</th><th>Pegawai</th><th>Tarikh Sasaran</th><th>Status</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.staff_name)}</td><td>${esc(r.instrument_title||r.instrument_id)}</td><td>${esc(r.finding||'-')}</td><td>${esc(r.action_text||'-')}</td><td>${esc(r.responsible_officer||'-')}</td><td>${esc(r.target_date||'-')}</td><td><span class="badge warn">${esc(r.status)}</span></td></tr>`).join('')}</tbody></table></div>`:`<div class="card muted">Tiada tindakan susulan terbuka.</div>`;
+}
+
+
+function formatDateTime(v){
+  if(!v) return '-';
+  try{return new Intl.DateTimeFormat('ms-MY',{dateStyle:'medium',timeStyle:'short'}).format(new Date(v))}catch(_){return String(v)}
+}
+
+async function reopenOwnSubmission(submissionId,assignmentId){
+  if(!confirm('Kemaskini hantaran ini? Status akan dibuka semula sebagai DRAF dan anda perlu tandatangan serta hantar semula.')) return;
+  const out=await post('reopen_submission',{submission_id:submissionId},{loading:true,title:'Membuka Semula Instrumen…',desc:'Sedang menyediakan borang untuk dikemaskini.'});
+  if(!out.ok){toast(out.message||out.error||'Gagal membuka semula instrumen.');return}
+  toast('Instrumen dibuka semula untuk kemaskini.');
+  await refreshAssignments(true);
+  const a=state.assignments.find(x=>x.assignment_id===assignmentId);
+  if(a) openAssignment(assignmentId,state.assignments); else viewAssignments();
+}
+
+function requestDeleteSubmission(submissionId,onDone){
+  if(!confirm('Adakah anda pasti mahu PADAM hantaran ini? Jawapan yang dipadam tidak boleh dikembalikan melalui webapp.')) return;
+  modal(`<h2>Pengesahan Padam</h2>
+    <p>Masukkan <b>No. Kad Pengenalan anda sendiri</b> untuk mengesahkan padam.</p>
+    <p class="muted">Pemilik instrumen menggunakan IC sendiri. Jika anda Admin, masukkan IC Admin yang sedang log masuk. Hanya salah satu pihak diperlukan.</p>
+    <div><label>No. Kad Pengenalan Pengesah</label><input id="deleteVerifyIc" inputmode="numeric" maxlength="12" autocomplete="off" placeholder="12 digit"></div>
+    <div class="toolbar" style="margin-top:16px"><button class="btn btn-danger" id="confirmDeleteSub">YA, PADAM</button><button class="btn btn-light" id="cancelDeleteSub">BATAL</button></div>`);
+  const ic=$('#deleteVerifyIc');
+  ic.oninput=()=>ic.value=ic.value.replace(/\D/g,'').slice(0,12);
+  $('#cancelDeleteSub').onclick=closeModal;
+  $('#confirmDeleteSub').onclick=async()=>{
+    if(ic.value.length!==12){toast('Masukkan 12 digit No. Kad Pengenalan.');return}
+    const out=await post('delete_submission',{submission_id:submissionId,ic:ic.value},{loading:true,title:'Memadam Hantaran…',desc:'Sedang mengesahkan identiti dan memadam data.'});
+    if(!out.ok){toast(out.message||out.error||'Pengesahan gagal.');return}
+    closeModal();
+    toast('Hantaran berjaya dipadam.');
+    await refreshAssignments(true).catch(()=>{});
+    if(onDone) await onDone();
+  };
+}
+
+async function submissionDetail(submissionId){
+  const out=await get('submission_detail',{submission_id:submissionId});
+  if(!out.ok) throw new Error(out.message||out.error||'Gagal mendapatkan data PDF.');
+  return out;
+}
+
+async function fetchImageDataUrl(url){
+  const r=await fetch(url,{mode:'cors'});
+  const b=await r.blob();
+  return await new Promise((resolve,reject)=>{const fr=new FileReader();fr.onload=()=>resolve(fr.result);fr.onerror=reject;fr.readAsDataURL(b)});
+}
+
+async function downloadSubmissionPdf(submissionId){
+  showLoader('Menjana PDF…','Sedang menyediakan borang A4 untuk dimuat turun.');
+  try{
+    const detail=await submissionDetail(submissionId);
+    const {jsPDF}=await import('https://esm.sh/jspdf@2.5.2');
+    const doc=new jsPDF({orientation:'portrait',unit:'mm',format:'a4'});
+    const sub=detail.submission;
+    const items=detail.items||[];
+    const margin=14, pageW=210, pageH=297, contentW=pageW-margin*2;
+    let y=14;
+    try{
+      const logo=await fetchImageDataUrl('https://i.postimg.cc/3RF9M05N/Logo-SKSA.png');
+      doc.addImage(logo,'PNG',margin,y,18,18);
+    }catch(_){/* PDF kekal berfungsi walaupun logo gagal */}
+    doc.setFont('helvetica','bold');doc.setFontSize(13);doc.text('SISTEM DIGITAL PENJAMINAN KUALITI',pageW/2,y+6,{align:'center'});
+    doc.setFontSize(10);doc.text('SK SG ABONG',pageW/2,y+12,{align:'center'});
+    y+=25;
+    doc.setDrawColor(190);doc.line(margin,y,pageW-margin,y);y+=7;
+    doc.setFontSize(11);doc.text(sub.instrument_title||sub.instrument_id,margin,y);y+=7;
+    doc.setFont('helvetica','normal');doc.setFontSize(9);
+    const meta=[['Nama',sub.staff_name],['Jawatan',sub.job_title||sub.target_role||'-'],['Tahun',String(sub.year||'')],['Status',sub.status],['Tarikh Hantar',formatDateTime(sub.submitted_at)]];
+    meta.forEach(([k,v])=>{doc.setFont('helvetica','bold');doc.text(`${k}:`,margin,y);doc.setFont('helvetica','normal');doc.text(String(v||'-'),margin+30,y);y+=5.5});
+    y+=3;
+    let lastSec='';
+    const newPage=()=>{doc.addPage();y=16};
+    for(const item of items){
+      const sec=`${item.bahagian||''} — ${item.seksyen||''}`;
+      if(sec!==lastSec){
+        if(y>270)newPage();
+        y+=3;doc.setFont('helvetica','bold');doc.setFontSize(10);doc.text(sec,margin,y);y+=5;lastSec=sec;
+      }
+      doc.setFontSize(8.5);doc.setFont('helvetica','bold');
+      const q=doc.splitTextToSize(`${item.no_item||''}. ${item.pernyataan||''}`,contentW);
+      const note=item.catatan?doc.splitTextToSize(`Catatan: ${item.catatan}`,contentW-8):[];
+      const needed=q.length*4.2+10+note.length*3.8;
+      if(y+needed>282)newPage();
+      doc.text(q,margin,y);y+=q.length*4.2+1.5;
+      doc.setFont('helvetica','normal');doc.text(`Jawapan: ${item.jawapan||'-'}`,margin+4,y);y+=4.2;
+      if(note.length){doc.setTextColor(85);doc.text(note,margin+4,y);doc.setTextColor(0);y+=note.length*3.8+1}
+      doc.setDrawColor(230);doc.line(margin,y,pageW-margin,y);y+=4;
+    }
+    if(y>235)newPage();
+    y+=6;doc.setFont('helvetica','bold');doc.setFontSize(9);doc.text('PENGESAHAN',margin,y);y+=7;
+    doc.setFont('helvetica','normal');doc.text(`Nama Penandatangan: ${sub.signer_name||sub.staff_name||'-'}`,margin,y);y+=6;
+    doc.text(`Tarikh Tandatangan: ${formatDateTime(sub.signed_at)}`,margin,y);y+=5;
+    if(sub.signature_data_url){
+      try{doc.addImage(sub.signature_data_url,'PNG',margin,y,55,24);y+=27}catch(_){doc.text('[Tandatangan digital disimpan]',margin,y);y+=6}
+    }
+    doc.setFontSize(7.5);doc.setTextColor(100);doc.text(`ID Hantaran: ${sub.submission_id}`,margin,pageH-10);
+    const safeName=String(sub.staff_name||'guru').replace(/[^A-Za-z0-9]+/g,'_').replace(/^_|_$/g,'');
+    doc.save(`${sub.instrument_id}_${safeName}_${sub.year||''}.pdf`);
+  }catch(err){console.error(err);toast(err.message||'Gagal menjana PDF.');}
+  finally{hideLoader()}
 }
 
 async function viewSettings(){
