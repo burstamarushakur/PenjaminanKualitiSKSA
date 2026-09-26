@@ -771,7 +771,7 @@ function staffModal(s){
   modal(`<h2>${s?'Edit':'Tambah'} Guru</h2>
     <form id="staffForm" class="stack">
       <div><label>Nama</label><input id="sNama" value="${esc(s?.nama||'')}" required></div>
-      <div><label>Email</label><input id="sEmail" type="email" value="${esc(s?.email||'')}" required></div>
+      <div><label>Email <span class="muted">(pilihan)</span></label><input id="sEmail" type="email" value="${esc(s?.email||'')}" placeholder="Tidak wajib"></div>
       <div class="form-row"><div><label>Jawatan</label><input id="sJawatan" value="${esc(s?.jawatan_hakiki||'')}"></div>
       <div><label>Panitia</label><input id="sPanitia" value="${esc(s?.panitia||'')}"></div></div>
       <div><label>No. Kad Pengenalan ${s?'(kosong = kekal)':''}</label><input id="sIc" inputmode="numeric" maxlength="12" placeholder="12 digit"></div>
