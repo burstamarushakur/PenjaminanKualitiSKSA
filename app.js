@@ -1167,6 +1167,123 @@ function findAnswerTarget(pageInfo, anchor, item){
   return candidates[0];
 }
 
+
+function detectScaleGroups(pageInfo){
+  const rows=[];
+
+  function addPoint(y,value,cx){
+    let row=rows.find(r=>Math.abs(r.y-y)<=2.8);
+    if(!row){
+      row={y,points:[]};
+      rows.push(row);
+    }
+    row.points.push({value:String(value),cx});
+  }
+
+  for(const it of pageInfo.items){
+    const raw=normPdfText(it.str);
+    if(!raw) continue;
+
+    const x=it.transform?.[4]||0;
+    const y=it.transform?.[5]||0;
+    const w=it.width||0;
+    const tokens=raw.split(/\s+/).map(t=>t.replace(/[^0-9]/g,'')).filter(Boolean);
+
+    // PDF item is a single digit.
+    if(tokens.length===1 && ['1','2','3','4','5'].includes(tokens[0]) && raw.length<=3){
+      addPoint(y,tokens[0],x+(w||6)/2);
+      continue;
+    }
+
+    // Some PDF pages expose "1 2 3 4 5" as one text item.
+    const valid=tokens.filter(t=>['1','2','3','4','5'].includes(t));
+    if(valid.length>=4){
+      const cellW=(w||valid.length*28)/valid.length;
+      valid.forEach((t,i)=>addPoint(y,t,x+(i+0.5)*cellW));
+    }
+  }
+
+  return rows.map(r=>{
+    const byValue=new Map();
+    for(const p of r.points){
+      if(!byValue.has(p.value)) byValue.set(p.value,p.cx);
+    }
+    const values=['1','2','3','4','5'];
+    const centers=values.map(v=>byValue.get(v)).filter(v=>Number.isFinite(v));
+    return {y:r.y,byValue,centers};
+  }).filter(r=>r.centers.length>=4);
+}
+
+function nearestScaleCenters(pageInfos,pageIndex,rowY){
+  // First prefer a numeric scale row on the SAME page nearest to the Ya/Tidak row.
+  const same=detectScaleGroups(pageInfos[pageIndex]||{items:[]});
+  if(same.length){
+    same.sort((a,b)=>Math.abs(a.y-rowY)-Math.abs(b.y-rowY));
+    const m=same[0].byValue;
+    const vals=['1','2','3','4','5'].map(v=>m.get(v));
+    if(vals.every(Number.isFinite)) return vals;
+  }
+
+  // If this page only has Ya/Tidak rows, borrow the 5-column geometry
+  // from the nearest page of the SAME official instrument.
+  const candidates=[];
+  pageInfos.forEach((p,pi)=>{
+    for(const g of detectScaleGroups(p)){
+      const vals=['1','2','3','4','5'].map(v=>g.byValue.get(v));
+      if(vals.every(Number.isFinite)) candidates.push({distance:Math.abs(pi-pageIndex),centers:vals});
+    }
+  });
+  candidates.sort((a,b)=>a.distance-b.distance);
+  return candidates[0]?.centers||null;
+}
+
+function yaTidakCheckboxPoint(pageInfos,pageIndex,anchor,target,item){
+  const centers=nearestScaleCenters(pageInfos,pageIndex,target?.y??anchor.y);
+  const answer=String(item.jawapan||'').trim().toUpperCase();
+
+  if(centers && centers.length===5){
+    // Struktur rasmi KPM bagi baris Ya/Tidak menggunakan lima petak SKALA:
+    // [ Ya ] [ PETAK TANDA ] [ Tidak ] [ gabungan/ruang ] [ PETAK TANDA ]
+    // Berdasarkan grid rasmi, tanda Ya berada pada pusat kolum skala ke-2,
+    // manakala tanda Tidak berada pada pusat kolum skala ke-5.
+    return {
+      x: answer==='TIDAK' ? centers[4] : centers[1],
+      y:(target?.y??anchor.y)+Math.max(target?.h||8,8)*0.35,
+      source:'scale-grid'
+    };
+  }
+
+  // Fallback defensif: cari label Ya/Tidak pada baris yang sama.
+  const rowY=target?.y??anchor.y;
+  const entries=pageInfos[pageIndex].items.map(it=>({
+    s:normPdfText(it.str),
+    x:it.transform?.[4]||0,
+    y:it.transform?.[5]||0,
+    w:it.width||0,
+    h:Math.abs(it.transform?.[3]||10)
+  })).filter(e=>Math.abs(e.y-rowY)<=5);
+
+  const ya=entries.find(e=>e.s==='YA');
+  const tidak=entries.find(e=>e.s==='TIDAK');
+
+  if(ya && tidak){
+    const yaBlank=(ya.x+ya.w+tidak.x)/2;
+    const baseWidth=Math.max(24,tidak.x-ya.x);
+    const tidakBlank=tidak.x+tidak.w+Math.max(10,(baseWidth-tidak.w)/2);
+    return {
+      x:answer==='TIDAK'?tidakBlank:yaBlank,
+      y:rowY+Math.max(target?.h||8,8)*0.35,
+      source:'text-fallback'
+    };
+  }
+
+  return {
+    x:Math.max(5,(target?.x??anchor.x)+((target?.w||10)+18)),
+    y:rowY+Math.max(target?.h||8,8)*0.35,
+    source:'last-fallback'
+  };
+}
+
 function drawVectorCheck(page,x,y,size=7,color){
   page.drawLine({start:{x:x-size*0.55,y:y},end:{x:x-size*0.12,y:y-size*0.42},thickness:1.6,color});
   page.drawLine({start:{x:x-size*0.12,y:y-size*0.42},end:{x:x+size*0.65,y:y+size*0.48},thickness:1.6,color});
@@ -1295,10 +1412,10 @@ async function stampOfficialKpmPdf(detail){
     const outPage=outDoc.getPage(a.pi);
 
     if(q.jenis_respons==='YA_TIDAK'){
-      // Letak √ sedikit di kiri perkataan Ya/Tidak supaya perkataan asal tidak ditutup.
-      const x=Math.max(5,target.x-8);
-      const y=target.y+Math.max(target.h,8)*0.35;
-      drawVectorCheck(outPage,x,y,6,black);
+      // Borang rasmi KPM menyediakan PETAK KOSONG selepas label Ya/Tidak.
+      // Tanda √ mesti berada di dalam petak kosong itu - bukan atas perkataan atau garisan.
+      const pt=yaTidakCheckboxPoint(pageInfos,a.pi,a,target,q);
+      drawVectorCheck(outPage,pt.x,pt.y,6.2,black);
     }else{
       const cx=target.x+Math.max(target.w,6)/2;
       const cy=target.y+Math.max(target.h,8)/3;
