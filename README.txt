@@ -1,30 +1,29 @@
-PENJAMINAN KUALITI SKSA - NEON v2.7 CHECKBOX MAPPING
+PENJAMINAN KUALITI SKSA - NEON v2.8 METADATA MAPPING + SELF AUDIT
 
-PEMBETULAN PENTING
-- Ya/Tidak TIDAK lagi ditanda di atas perkataan atau garisan.
-- Sistem membaca geometri 5 kolum SKALA daripada PDF rasmi KPM.
-- Untuk baris Ya/Tidak:
-    YA    -> tanda √ pada PETAK KOSONG selepas "Ya" (kolum skala ke-2)
-    TIDAK -> tanda √ pada PETAK KOSONG selepas "Tidak" (kolum skala ke-5)
-- Jika sesuatu halaman hanya ada Ya/Tidak, sistem pinjam geometri grid daripada halaman
-  terdekat dalam instrumen rasmi yang sama.
-- Fallback berasaskan kedudukan teks disediakan jika PDF extraction berbeza.
+ROOT CAUSE YANG DIBETULKAN
+PAJSK-B: nilai seperti "KRIKET" sebenarnya sudah tersimpan dalam Neon.
+PDF tak memaparkannya kerana label panjang
+"Kelab Persatuan / Sukan Permainan / Pasukan Badan Beruniform:"
+dipecahkan oleh PDF.js kepada banyak text item. Locator lama hanya mencari satu item.
 
-SKOP
-Pembetulan ini digunakan oleh SATU engine generik untuk semua 11 instrumen:
-PBD-A, PBD-B, PBD-C,
-PPsi-A, PPsi-B, PPsi-C,
-PAJSK-A, PAJSK-B,
-SEGAK-A, SEGAK-B, SEGAK-C.
-
-Semua pembetulan v2.6 kekal:
-- Nama sekolah auto: SEKOLAH KEBANGSAAN SUNGAI ABONG
-- Kod sekolah auto: JBA5095
-- Metadata wajib ikut instrumen
-- PDF asal rasmi KPM sebagai template
-- skala 1-5 dibulatkan
-- tandatangan digital
+v2.8
+- Locator Bahagian A sekarang membaca KESELURUHAN BARIS PDF dan boleh match label
+  walaupun label dipecahkan kepada banyak text item.
+- PAJSK-B kini stamp field Kelab/Persatuan/Sukan/Permainan/Pasukan Badan Beruniform.
+- Mapping Bahagian A rasmi disahkan untuk semua 11 instrumen:
+  PBD-A/B/C: Nama, Jawatan, Mata Pelajaran Diajar, Tahun/Tingkatan
+  PPsi-A/B/C: Nama, Jawatan
+  PAJSK-A: Nama, Jawatan, Sekolah
+  PAJSK-B: Nama, Jawatan, Kelab Persatuan / Sukan Permainan / Pasukan Badan Beruniform
+  SEGAK-A/B/C: Nama Sekolah, Kod Sekolah, Nama, Jawatan pilihan, Skop SEGAK/BMI
+- Nama sekolah & kod sekolah auto seperti v2.6:
+  SEKOLAH KEBANGSAAN SUNGAI ABONG / JBA5095
+- Checkbox Ya/Tidak dalam petak seperti v2.7.
+- SELF-AUDIT PDF: jika satu medan Bahagian A wajib gagal dipetakan,
+  sistem TIDAK akan keluarkan PDF separuh lengkap. Ia hentikan download dan
+  beri nama medan yang gagal mapping.
+- Data "KRIKET" submission sedia ada tak perlu diisi semula selepas deploy.
 
 DEPLOY
 Upload SEMUA kandungan ZIP ke root repo GitHub/Vercel.
-Selepas Vercel siap deploy, buat Ctrl+Shift+R.
+Selepas deploy, Ctrl+Shift+R.

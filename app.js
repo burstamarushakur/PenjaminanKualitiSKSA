@@ -170,7 +170,7 @@ const INSTRUMENT_REQUIREMENTS = {
   'PPSI-B': {metaTitle:'BAHAGIAN A: MAKLUMAT GURU PENOLONG KANAN HAL EHWAL MURID',fields:[]},
   'PPSI-C': {metaTitle:'BAHAGIAN A: MAKLUMAT GURU BIMBINGAN DAN KAUNSELING/GURU BIMBINGAN LANTIKAN DALAMAN',fields:[]},
   'PAJSK-A': {metaTitle:'BAHAGIAN A: MAKLUMAT PENGETUA/GURU BESAR/GURU PENOLONG KANAN',fields:['school_name']},
-  'PAJSK-B': {metaTitle:'BAHAGIAN A: MAKLUMAT GURU KOKURIKULUM',fields:['kokurikulum_unit']},
+  'PAJSK-B': {metaTitle:'BAHAGIAN A: MAKLUMAT GURU MATA PELAJARAN',fields:['kokurikulum_unit']},
   'SEGAK-A': {metaTitle:'BAHAGIAN A: MAKLUMAT PENGETUA/GURU BESAR/GURU PENOLONG KANAN PENTADBIRAN',fields:['school_name','school_code','role_option','scope'],roles:['PENGETUA','GURU BESAR','GURU PENOLONG KANAN PENTADBIRAN']},
   'SEGAK-B': {metaTitle:'BAHAGIAN A: MAKLUMAT GURU KANAN MATA PELAJARAN/KETUA PANITIA PENDIDIKAN JASMANI DAN PENDIDIKAN KESIHATAN',fields:['school_name','school_code','role_option','scope'],roles:['GURU KANAN MATA PELAJARAN','KETUA PANITIA']},
   'SEGAK-C': {metaTitle:'BAHAGIAN A: MAKLUMAT GURU MATA PELAJARAN PJPK/GURU PRASEKOLAH/GURU PPKI',fields:['school_name','school_code','role_option','scope'],roles:['GMP PJPK','GURU PRASEKOLAH','GURU PPKI']}
@@ -1303,9 +1303,75 @@ function allExactText(pageInfo,label){
   return pageInfo.items.map((it,idx)=>({it,idx,s:normPdfText(it.str),x:it.transform?.[4]||0,y:it.transform?.[5]||0,w:it.width||0,h:Math.abs(it.transform?.[3]||10)})).filter(x=>x.s===t).sort((a,b)=>b.y-a.y);
 }
 
-function findLabel(pageInfo, labels){
+function pdfLineGroups(pageInfo,tolerance=3.5){
+  const entries=(pageInfo.items||[]).map((it,idx)=>({
+    it,idx,
+    raw:String(it.str||''),
+    s:normPdfText(it.str),
+    c:compactPdfText(it.str),
+    x:it.transform?.[4]||0,
+    y:it.transform?.[5]||0,
+    w:it.width||0,
+    h:Math.abs(it.transform?.[3]||10)
+  })).filter(x=>x.s);
+
+  const lines=[];
+  for(const e of entries.sort((a,b)=>b.y-a.y || a.x-b.x)){
+    let line=lines.find(l=>Math.abs(l.y-e.y)<=tolerance);
+    if(!line){
+      line={y:e.y,items:[]};
+      lines.push(line);
+    }
+    line.items.push(e);
+    line.y=(line.items.reduce((s,x)=>s+x.y,0)/line.items.length);
+  }
+
+  for(const line of lines){
+    line.items.sort((a,b)=>a.x-b.x);
+    line.text=line.items.map(x=>x.s).join(' ');
+    line.compact=line.items.map(x=>x.c).join('');
+  }
+  return lines;
+}
+
+function findLabelSpan(pageInfo,labels){
+  const lines=pdfLineGroups(pageInfo);
+
+  for(const label of labels){
+    const needle=compactPdfText(label);
+    if(!needle) continue;
+
+    for(const line of lines){
+      const pos=line.compact.indexOf(needle);
+      if(pos<0) continue;
+
+      let cursor=0;
+      const hit=[];
+      for(const item of line.items){
+        const len=item.c.length;
+        const itemStart=cursor;
+        const itemEnd=cursor+len;
+        const needleEnd=pos+needle.length;
+        if(len && itemEnd>pos && itemStart<needleEnd) hit.push(item);
+        cursor=itemEnd;
+      }
+      if(!hit.length) continue;
+
+      return {
+        x:Math.min(...hit.map(x=>x.x)),
+        y:hit.reduce((s,x)=>s+x.y,0)/hit.length,
+        w:Math.max(...hit.map(x=>x.x+x.w))-Math.min(...hit.map(x=>x.x)),
+        h:Math.max(...hit.map(x=>x.h)),
+        lineText:line.text,
+        matchedLabel:label,
+        items:hit
+      };
+    }
+  }
+
+  // Fallback lama untuk label yang memang satu text item.
   const needles=labels.map(normPdfText);
-  const arr=pageInfo.items.map((it,idx)=>({
+  const arr=(pageInfo.items||[]).map((it,idx)=>({
     it,idx,s:normPdfText(it.str),x:it.transform?.[4]||0,y:it.transform?.[5]||0,w:it.width||0,h:Math.abs(it.transform?.[3]||10)
   }));
   for(const needle of needles){
@@ -1315,6 +1381,48 @@ function findLabel(pageInfo, labels){
     if(partial) return partial;
   }
   return null;
+}
+
+function findLabel(pageInfo,labels){
+  return findLabelSpan(pageInfo,labels);
+}
+
+
+const PDF_REQUIRED_STAMPS = {
+  'PBD-A':['name','job_title','subject_taught','year_form'],
+  'PBD-B':['name','job_title','subject_taught','year_form'],
+  'PBD-C':['name','job_title','subject_taught','year_form'],
+  'PPSI-A':['name','job_title'],
+  'PPSI-B':['name','job_title'],
+  'PPSI-C':['name','job_title'],
+  'PAJSK-A':['name','job_title','school_name'],
+  'PAJSK-B':['name','job_title','kokurikulum_unit'],
+  'SEGAK-A':['school_name','school_code','name','role_option','scope'],
+  'SEGAK-B':['school_name','school_code','name','role_option','scope'],
+  'SEGAK-C':['school_name','school_code','name','role_option','scope']
+};
+
+function assertPdfStampAudit(instrumentId,audit){
+  const required=PDF_REQUIRED_STAMPS[instrumentId]||[];
+  const missing=required.filter(k=>!audit[k]);
+  if(missing.length){
+    const names={
+      name:'Nama',
+      job_title:'Jawatan',
+      subject_taught:'Mata Pelajaran Diajar',
+      year_form:'Tahun/Tingkatan',
+      school_name:'Nama Sekolah',
+      school_code:'Kod Sekolah',
+      kokurikulum_unit:'Kelab/Persatuan/Sukan/Permainan/Pasukan Badan Beruniform',
+      role_option:'Pilihan Jawatan',
+      scope:'Skop SEGAK/BMI'
+    };
+    throw new Error(
+      `PDF rasmi ${instrumentId} tidak dijana kerana mapping medan berikut gagal: `+
+      missing.map(x=>names[x]||x).join(', ')+
+      '. Sistem sengaja menghentikan muat turun supaya borang tidak keluar separuh lengkap.'
+    );
+  }
 }
 
 async function stampOfficialKpmPdf(detail){
@@ -1349,20 +1457,34 @@ async function stampOfficialKpmPdf(detail){
   const firstOut=outDoc.getPage(0);
   const meta=sub.metadata||{};
 
+  const stampAudit={};
+
   function putAfter(labels,value,opts={}){
     if(!String(value||'').trim()) return false;
-    const lab=findLabel(firstInfo,labels);
+    const lab=findLabelSpan(firstInfo,labels);
     if(!lab) return false;
-    const x=opts.x ?? Math.min(lab.x+lab.w+(opts.gap??10), firstOut.getWidth()-(opts.maxWidth??300));
+
+    const maxWidth=opts.maxWidth||290;
+    let x=opts.x ?? (lab.x+lab.w+(opts.gap??10));
+    x=Math.min(x,Math.max(8,firstOut.getWidth()-maxWidth-12));
     const y=opts.y ?? (lab.y-1);
-    firstOut.drawText(String(value),{x,y,size:opts.size||8.7,font:opts.bold?bold:font,color:black,maxWidth:opts.maxWidth||290});
+
+    firstOut.drawText(String(value),{
+      x,y,
+      size:opts.size||8.7,
+      font:opts.bold?bold:font,
+      color:black,
+      maxWidth
+    });
+
+    if(opts.key) stampAudit[opts.key]=true;
     return true;
   }
 
   if(instrumentId.startsWith('SEGAK-')){
-    putAfter(['NAMA SEKOLAH:','NAMA SEKOLAH :','NAMA SEKOLAH'],window.PK_CONFIG.SCHOOL_OFFICIAL_NAME||'SEKOLAH KEBANGSAAN SUNGAI ABONG');
-    putAfter(['KOD SEKOLAH:','KOD SEKOLAH :','KOD SEKOLAH'],window.PK_CONFIG.SCHOOL_CODE||'JBA5095',{maxWidth:140});
-    putAfter(['NAMA GURU:','NAMA GURU :','NAMA GURU','3. NAMA:','3. NAMA :'],sub.staff_name||'');
+    putAfter(['1. NAMA SEKOLAH:','1. NAMA SEKOLAH :','NAMA SEKOLAH:','NAMA SEKOLAH :','NAMA SEKOLAH'],window.PK_CONFIG.SCHOOL_OFFICIAL_NAME||'SEKOLAH KEBANGSAAN SUNGAI ABONG',{key:'school_name',maxWidth:360});
+    putAfter(['2. KOD SEKOLAH:','2. KOD SEKOLAH :','KOD SEKOLAH:','KOD SEKOLAH :','KOD SEKOLAH'],window.PK_CONFIG.SCHOOL_CODE||'JBA5095',{key:'school_code',maxWidth:140});
+    putAfter(['3. NAMA GURU:','3. NAMA GURU :','NAMA GURU:','NAMA GURU :','NAMA GURU','3. NAMA:','3. NAMA :'],sub.staff_name||'',{key:'name',maxWidth:330});
 
     const roleMap={
       'PENGETUA':['PENGETUA'],
@@ -1374,7 +1496,10 @@ async function stampOfficialKpmPdf(detail){
       'GURU PRASEKOLAH':['GURU PRASEKOLAH'],
       'GURU PPKI':['GURU PPKI']
     };
-    if(meta.role_option) markTextChoice(firstInfo,firstOut,roleMap[meta.role_option]||[meta.role_option],black,'left');
+    if(meta.role_option){
+      const roleOk=markTextChoice(firstInfo,firstOut,roleMap[meta.role_option]||[meta.role_option],black,'left');
+      if(roleOk) stampAudit.role_option=true;
+    }
 
     // Jadual skop di bahagian atas: SEGAK (SM/SR), BMI 5-9T (SR/Prasekolah/PPKI).
     const scopes=new Set(Array.isArray(meta.scope)?meta.scope:[]);
@@ -1383,24 +1508,35 @@ async function stampOfficialKpmPdf(detail){
     const pra=allExactText(firstInfo,'Prasekolah');
     const ppki=allExactText(firstInfo,'PPKI');
     const markRight=t=>{if(!t)return;drawVectorCheck(firstOut,t.x+t.w+10,t.y+Math.max(t.h,8)*0.35,6,black)};
-    if(scopes.has('SEGAK_SM')) markRight(sm[0]);
-    if(scopes.has('SEGAK_SR')) markRight(sr[0]);
-    if(scopes.has('BMI_SR')) markRight(sr[1]);
-    if(scopes.has('BMI_PRASEKOLAH')) markRight(pra[0]);
-    if(scopes.has('BMI_PPKI')) markRight(ppki[0]);
+    let scopeMarks=0;
+    if(scopes.has('SEGAK_SM') && sm[0]){markRight(sm[0]);scopeMarks++;}
+    if(scopes.has('SEGAK_SR') && sr[0]){markRight(sr[0]);scopeMarks++;}
+    if(scopes.has('BMI_SR') && sr[1]){markRight(sr[1]);scopeMarks++;}
+    if(scopes.has('BMI_PRASEKOLAH') && pra[0]){markRight(pra[0]);scopeMarks++;}
+    if(scopes.has('BMI_PPKI') && ppki[0]){markRight(ppki[0]);scopeMarks++;}
+    if(scopes.size>0 && scopeMarks===scopes.size) stampAudit.scope=true;
   }else{
-    putAfter(['NAMA:','NAMA :','1. NAMA:','1. NAMA :'],sub.staff_name||'');
-    putAfter(['JAWATAN:','JAWATAN :','2. JAWATAN:','2. JAWATAN :'],sub.job_title||sub.target_role||'');
+    putAfter(['1. NAMA:','1. NAMA :','NAMA:','NAMA :','NAMA'],sub.staff_name||'',{key:'name',maxWidth:340});
+    putAfter(['2. JAWATAN:','2. JAWATAN :','JAWATAN:','JAWATAN :','JAWATAN'],sub.job_title||sub.target_role||'',{key:'job_title',maxWidth:250});
 
     if(instrumentId.startsWith('PBD-')){
-      putAfter(['MATA PELAJARAN DIAJAR:','MATA PELAJARAN DIAJAR :','3. MATA PELAJARAN DIAJAR:'],meta.subject_taught||'');
-      putAfter(['TAHUN/TINGKATAN:','TAHUN/TINGKATAN :','4. TAHUN/TINGKATAN:'],meta.year_form||'');
+      putAfter(['3. MATA PELAJARAN DIAJAR:','3. MATA PELAJARAN DIAJAR :','MATA PELAJARAN DIAJAR:','MATA PELAJARAN DIAJAR :','MATA PELAJARAN DIAJAR'],meta.subject_taught||'',{key:'subject_taught',maxWidth:300});
+      putAfter(['4. TAHUN/TINGKATAN:','4. TAHUN/TINGKATAN :','TAHUN/TINGKATAN:','TAHUN/TINGKATAN :','TAHUN/TINGKATAN'],meta.year_form||'',{key:'year_form',maxWidth:260});
     }else if(instrumentId==='PAJSK-A'){
-      putAfter(['SEKOLAH:','SEKOLAH :','3. SEKOLAH:'],window.PK_CONFIG.SCHOOL_OFFICIAL_NAME||'SEKOLAH KEBANGSAAN SUNGAI ABONG');
+      putAfter(['3. SEKOLAH:','3. SEKOLAH :','SEKOLAH:','SEKOLAH :','SEKOLAH'],window.PK_CONFIG.SCHOOL_OFFICIAL_NAME||'SEKOLAH KEBANGSAAN SUNGAI ABONG',{key:'school_name',maxWidth:360});
     }else if(instrumentId==='PAJSK-B'){
-      putAfter(['KELAB PERSATUAN / SUKAN PERMAINAN / PASUKAN BADAN BERUNIFORM:','KELAB PERSATUAN','SUKAN PERMAINAN','PASUKAN BADAN BERUNIFORM'],meta.kokurikulum_unit||'',{maxWidth:330,size:8});
+      putAfter([
+        '3. KELAB PERSATUAN / SUKAN PERMAINAN / PASUKAN BADAN BERUNIFORM:',
+        'KELAB PERSATUAN / SUKAN PERMAINAN / PASUKAN BADAN BERUNIFORM:',
+        'KELAB PERSATUAN / SUKAN PERMAINAN / PASUKAN BADAN BERUNIFORM',
+        'KELAB PERSATUAN SUKAN PERMAINAN PASUKAN BADAN BERUNIFORM'
+      ],meta.kokurikulum_unit||'',{key:'kokurikulum_unit',maxWidth:330,size:8.5,gap:12});
     }
   }
+
+  // Semak mapping Bahagian A sebelum teruskan.
+  // Jika satu medan wajib gagal dipetakan, hentikan PDF daripada dimuat turun.
+  assertPdfStampAudit(instrumentId,stampAudit);
 
   // BAHAGIAN B & C - bulatkan skala; untuk Ya/Tidak gunakan tanda √ (bukan pangkah X).
   for(const q of items){
