@@ -89,7 +89,7 @@ async function renderLogin(){
         <img class="school-logo" src="https://i.postimg.cc/3RF9M05N/Logo-SKSA.png" alt="Logo SK Sungai Abong">
       </div>
       <h1>Log Masuk</h1>
-      <p class="system-title">SISTEM DIGITAL PENJAMINAN KUALITI SK SG ABONG</p>
+      <p class="system-title"><span>SISTEM DIGITAL</span><span>PENJAMINAN KUALITI</span><span>SK SG ABONG</span></p>
       <form id="loginForm" class="stack">
         <div>
           <label>No. Kad Pengenalan</label>
@@ -282,7 +282,8 @@ async function openAssignment(id,rows){
 
 function renderForm(a,sub){
   title(a.instrument?.tajuk||a.instrument_id);
-  const locked=String(sub.status).toUpperCase()==='SUBMITTED';
+  const status=sub?.status||'OPEN';
+  const locked=String(status).toUpperCase()==='SUBMITTED';
   let lastSection='';
   const html=state.currentItems.map(item=>{
     const r=state.currentResponses[item.item_id]||{};
@@ -294,9 +295,9 @@ function renderForm(a,sub){
 
   $('#view').innerHTML=`<div class="toolbar" style="margin-bottom:14px">
     <button class="btn btn-light" id="backAssign">← Kembali</button>
-    <span class="badge ${locked?'ok':'warn'}">${esc(sub.status)}</span>
+    <span class="badge ${locked?'ok':'gray'}">${esc(status)}</span>
     <span id="saveState" class="muted"></span>
-    ${sub.pdf_url?`<a href="${esc(sub.pdf_url)}" target="_blank" class="btn btn-light">Buka PDF</a>`:''}
+    ${sub?.pdf_url?`<a href="${esc(sub.pdf_url)}" target="_blank" class="btn btn-light">Buka PDF</a>`:''}
   </div>
   <div class="card">${html}</div>
   ${locked?'':`<div class="card" style="margin-top:16px">
@@ -348,14 +349,24 @@ async function saveCurrentResponses(){
   const responses=Object.values(state.currentResponses).map(r=>({
     item_id:r.item_id,jawapan:r.jawapan||'',catatan:r.catatan||'',evidence_url:r.evidence_url||''
   }));
-  const out=await post('save_responses',{submission_id:sub.submission_id,responses});
+  const payload={responses,assignment_id:state.currentAssignment.assignment_id};
+  if(sub?.submission_id) payload.submission_id=sub.submission_id;
+  const out=await post('save_responses',payload);
+  if(out.ok && out.submission_id && !state.currentSubmission){
+    state.currentSubmission={submission_id:out.submission_id,status:'DRAFT'};
+  }
   $('#saveState').textContent=out.ok?'Disimpan':'Gagal simpan';
+  return out;
 }
 
 async function submitCurrent(){
-  await saveCurrentResponses();
+  const saved=await saveCurrentResponses();
   const signer=$('#signer').value.trim();
   if(!signer){toast('Isi nama penandatangan.');return}
+  if(!state.currentSubmission?.submission_id){
+    toast('Jawab sekurang-kurangnya satu item dahulu sebelum hantar.');
+    return;
+  }
   const out=await post('submit_submission',{submission_id:state.currentSubmission.submission_id,nama_penandatangan:signer});
   if(!out.ok){
     if(out.error==='INCOMPLETE') toast(`Masih ada ${out.missing_item_ids.length} item wajib belum dijawab.`);
@@ -496,9 +507,16 @@ async function viewSubmissions(){
   title('Hantaran');
   const out=await get('submissions');
   const rows=out.submissions||[];
-  $('#view').innerHTML=`<div class="table-wrap"><table><thead><tr><th>Guru</th><th>Instrumen</th><th>Status</th><th>Tarikh Hantar</th><th>PDF</th></tr></thead><tbody>
-  ${rows.map(r=>`<tr><td>${esc(r.staff_name)}</td><td>${esc(r.instrument_title||r.instrument_id)}</td><td><span class="badge ${r.status==='SUBMITTED'?'ok':'warn'}">${esc(r.status)}</span></td><td>${esc(r.tarikh_hantar||'-')}</td><td>${r.pdf_url?`<a class="btn btn-light" target="_blank" href="${esc(r.pdf_url)}">Buka</a>`:'-'}</td></tr>`).join('')}
+  $('#view').innerHTML=`<div class="table-wrap"><table><thead><tr><th>Guru</th><th>Instrumen</th><th>Status</th><th>Tarikh Hantar</th><th>PDF</th><th>Tindakan</th></tr></thead><tbody>
+  ${rows.map(r=>`<tr><td>${esc(r.staff_name)}</td><td>${esc(r.instrument_title||r.instrument_id)}</td><td><span class="badge ${r.status==='SUBMITTED'?'ok':'warn'}">${esc(r.status)}</span></td><td>${esc(r.tarikh_hantar||'-')}</td><td>${r.pdf_url?`<a class="btn btn-light" target="_blank" href="${esc(r.pdf_url)}">Buka</a>`:'-'}</td><td>${r.status==='DRAFT'?`<button class="btn btn-danger" data-del-draft="${esc(r.submission_id)}">Padam Draf</button>`:'-'}</td></tr>`).join('')}
   </tbody></table></div>`;
+  $$('[data-del-draft]').forEach(b=>b.onclick=async()=>{
+    if(!confirm('Padam draf ini?')) return;
+    const res=await post('delete_submission',{submission_id:b.dataset.delDraft});
+    if(!res.ok){toast(res.message||res.error||'Gagal padam draf.');return}
+    toast('Draf dipadam.');
+    await viewSubmissions();
+  });
 }
 
 async function viewSettings(){
