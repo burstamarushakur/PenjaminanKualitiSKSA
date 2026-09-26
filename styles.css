@@ -128,3 +128,12 @@ button:disabled{opacity:.65;cursor:wait}
 
 .loader-logo-wrap,.bootLogoWrap{position:relative}
 .loader-logo-wrap::after,.bootLogoWrap::after{content:'SKSA';position:absolute;inset:0;display:grid;place-items:center;font-weight:900;font-size:13px;color:#0f3d73;z-index:-1}
+
+.signature-block{margin-top:18px}
+.signature-head{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:9px}
+.signature-hint{font-size:12px;margin-top:2px}
+.signature-pad-wrap{position:relative;border:2px dashed #94a3b8;border-radius:14px;background:#fff;overflow:hidden;touch-action:none;box-shadow:inset 0 0 0 1px rgba(15,91,216,.04)}
+.signature-pad-wrap::after{content:'Tandatangan di sini';position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:#cbd5e1;font-size:16px;font-weight:700;pointer-events:none;z-index:0}
+#signaturePad{display:block;position:relative;z-index:1;cursor:crosshair;touch-action:none;background:transparent}
+.signature-summary{display:flex;flex-direction:column;gap:4px}
+@media(max-width:640px){.signature-head{align-items:flex-start;flex-direction:column}.signature-head .btn{width:100%}}

@@ -21,7 +21,8 @@ const state = {
   currentSubmission: null,
   currentItems: [],
   currentResponses: {},
-  saveTimer: null
+  saveTimer: null,
+  signatureHasInk: false
 };
 
 const $ = (sel, root=document) => root.querySelector(sel);
@@ -90,28 +91,28 @@ async function fetchJson_(url,options={},timeoutMs=20000){
 }
 
 async function get(action, params={}, opts={}){
-  const {loading=false,title='Memuatkan Sistem…',desc='Sila tunggu sebentar.'}=opts||{};
+  const {loading=false,title='Memuatkan Sistem…',desc='Sila tunggu sebentar.',timeoutMs=20000}=opts||{};
   if(loading) showLoader(title,desc);
   try{
     const u=new URL(API);
     u.searchParams.set('action',action);
     if(state.token) u.searchParams.set('token',state.token);
     Object.entries(params).forEach(([k,v])=>v!==undefined&&v!==null&&u.searchParams.set(k,v));
-    return await fetchJson_(u,{redirect:'follow'});
+    return await fetchJson_(u,{redirect:'follow'},timeoutMs);
   }finally{
     if(loading) hideLoader();
   }
 }
 
 async function post(action,payload={},opts={}){
-  const {loading=false,title='Memuatkan Sistem…',desc='Sila tunggu sebentar.'}=opts||{};
+  const {loading=false,title='Memuatkan Sistem…',desc='Sila tunggu sebentar.',timeoutMs=20000}=opts||{};
   if(loading) showLoader(title,desc);
   try{
     return await fetchJson_(API,{
       method:'POST',
       headers:{'Content-Type':'text/plain;charset=utf-8'},
       body:JSON.stringify({action,token:state.token,payload})
-    });
+    },timeoutMs);
   }finally{
     if(loading) hideLoader();
   }
@@ -383,8 +384,18 @@ function renderForm(a,sub){
     ${sub?.pdf_url?`<a href="${esc(sub.pdf_url)}" target="_blank" class="btn btn-light">Buka PDF</a>`:''}
   </div>
   <div class="card">${html}</div>
-  ${locked?'':`<div class="card" style="margin-top:16px">
+  ${locked?`<div class="card signature-summary" style="margin-top:16px">
+      <b>Tandatangan Digital</b>
+      <span class="muted">Tandatangan telah disimpan bersama hantaran.</span>
+    </div>`:`<div class="card" style="margin-top:16px">
     <div class="form-row"><div><label>Nama Penandatangan</label><input id="signer" value="${esc(state.user.nama)}"></div></div>
+    <div class="signature-block">
+      <div class="signature-head">
+        <div><label>Tandatangan Digital</label><div class="muted signature-hint">Gunakan tetikus atau jari untuk tandatangan dalam kotak.</div></div>
+        <button type="button" class="btn btn-light" id="clearSignature">Padam Tandatangan</button>
+      </div>
+      <div class="signature-pad-wrap"><canvas id="signaturePad" aria-label="Pad tandatangan digital"></canvas></div>
+    </div>
     <div class="toolbar" style="margin-top:14px"><button id="submitForm" class="btn btn-success">Hantar & Jana PDF</button></div>
   </div>`}`;
 
@@ -394,8 +405,38 @@ function renderForm(a,sub){
       el.onchange=handleAnswerChange;
       if(el.tagName==='TEXTAREA') el.oninput=handleAnswerChange;
     });
+    initSignaturePad();
     $('#submitForm').onclick=submitCurrent;
   }
+}
+
+function initSignaturePad(){
+  const canvas=$('#signaturePad');
+  if(!canvas) return;
+  const wrap=canvas.parentElement;
+  const dpr=Math.max(1,window.devicePixelRatio||1);
+  const rect=wrap.getBoundingClientRect();
+  canvas.width=Math.max(300,Math.floor(rect.width*dpr));
+  canvas.height=Math.floor(180*dpr);
+  canvas.style.width='100%';
+  canvas.style.height='180px';
+  const ctx=canvas.getContext('2d');
+  ctx.scale(dpr,dpr);
+  ctx.lineCap='round'; ctx.lineJoin='round'; ctx.strokeStyle='#111827'; ctx.lineWidth=2.4;
+  state.signatureHasInk=false;
+  let drawing=false;
+  const point=e=>{const r=canvas.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top}};
+  canvas.onpointerdown=e=>{drawing=true;canvas.setPointerCapture(e.pointerId);const p=point(e);ctx.beginPath();ctx.moveTo(p.x,p.y);e.preventDefault()};
+  canvas.onpointermove=e=>{if(!drawing)return;const p=point(e);ctx.lineTo(p.x,p.y);ctx.stroke();state.signatureHasInk=true;e.preventDefault()};
+  const stop=e=>{drawing=false;try{canvas.releasePointerCapture(e.pointerId)}catch(_){}};
+  canvas.onpointerup=stop; canvas.onpointercancel=stop; canvas.onpointerleave=e=>{if(drawing)stop(e)};
+  $('#clearSignature').onclick=()=>{ctx.clearRect(0,0,canvas.width/dpr,canvas.height/dpr);state.signatureHasInk=false};
+}
+
+function getSignatureData(){
+  const canvas=$('#signaturePad');
+  if(!canvas||!state.signatureHasInk)return '';
+  return canvas.toDataURL('image/png');
 }
 
 function renderItem(item,r,locked){
@@ -443,21 +484,50 @@ async function saveCurrentResponses(){
 }
 
 async function submitCurrent(){
-  const saved=await saveCurrentResponses();
-  const signer=$('#signer').value.trim();
-  if(!signer){toast('Isi nama penandatangan.');return}
-  if(!state.currentSubmission?.submission_id){
-    toast('Jawab sekurang-kurangnya satu item dahulu sebelum hantar.');
-    return;
+  const btn=$('#submitForm');
+  if(btn){btn.disabled=true;btn.textContent='Menghantar…'}
+  try{
+    await saveCurrentResponses();
+    const signer=$('#signer').value.trim();
+    if(!signer){toast('Isi nama penandatangan.');return}
+    if(!state.signatureHasInk){toast('Sila tandatangan dalam kotak Tandatangan Digital.');return}
+    if(!state.currentSubmission?.submission_id){toast('Jawab sekurang-kurangnya satu item dahulu sebelum hantar.');return}
+
+    const out=await post('submit_submission',{
+      submission_id:state.currentSubmission.submission_id,
+      nama_penandatangan:signer,
+      signature_data:getSignatureData()
+    },{
+      loading:true,
+      title:'Menghantar Instrumen…',
+      desc:'Sedang menyimpan tandatangan dan memuktamadkan hantaran.',
+      timeoutMs:45000
+    });
+
+    if(!out.ok){
+      if(out.error==='INCOMPLETE') toast(`Masih ada ${out.missing_item_ids.length} item wajib belum dijawab.`);
+      else toast(out.message||out.error);
+      return;
+    }
+
+    state.currentSubmission={...state.currentSubmission,status:'SUBMITTED',signature_url:out.signature_url||''};
+
+    let pdfOut=null;
+    try{
+      pdfOut=await post('generate_pdf',{submission_id:state.currentSubmission.submission_id},{
+        loading:true,title:'Menjana PDF…',desc:'Hantaran sudah berjaya. Sedang menyediakan fail PDF.',timeoutMs:90000
+      });
+    }catch(err){console.error(err)}
+
+    toast(pdfOut?.ok?'Hantaran berjaya dan PDF telah dijana.':'Hantaran berjaya. PDF belum siap dan boleh dijana semula di menu Hantaran.');
+    await viewAssignments();
+  }catch(err){
+    console.error(err);
+    const msg=err?.name==='AbortError'?'Proses mengambil masa terlalu lama. Data jawapan masih disimpan — cuba Hantar semula.':(err?.message||'Gagal menghantar instrumen.');
+    toast(msg);
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='Hantar & Jana PDF'}
   }
-  const out=await post('submit_submission',{submission_id:state.currentSubmission.submission_id,nama_penandatangan:signer},{loading:true,title:'Menghantar Instrumen…',desc:'Sedang menjana hantaran dan PDF.'});
-  if(!out.ok){
-    if(out.error==='INCOMPLETE') toast(`Masih ada ${out.missing_item_ids.length} item wajib belum dijawab.`);
-    else toast(out.message||out.error);
-    return;
-  }
-  toast(out.warning||'Berjaya dihantar.');
-  await viewAssignments();
 }
 
 async function viewStaff(){
@@ -591,7 +661,7 @@ async function viewSubmissions(){
   const out=await get('submissions',{}, {loading:true,title:'Memuatkan Hantaran…',desc:'Sedang mendapatkan rekod hantaran.'});
   const rows=out.submissions||[];
   $('#view').innerHTML=`<div class="table-wrap"><table><thead><tr><th>Guru</th><th>Instrumen</th><th>Status</th><th>Tarikh Hantar</th><th>PDF</th><th>Tindakan</th></tr></thead><tbody>
-  ${rows.map(r=>`<tr><td>${esc(r.staff_name)}</td><td>${esc(r.instrument_title||r.instrument_id)}</td><td><span class="badge ${r.status==='SUBMITTED'?'ok':'warn'}">${esc(r.status)}</span></td><td>${esc(r.tarikh_hantar||'-')}</td><td>${r.pdf_url?`<a class="btn btn-light" target="_blank" href="${esc(r.pdf_url)}">Buka</a>`:'-'}</td><td>${r.status==='DRAFT'?`<button class="btn btn-danger" data-del-draft="${esc(r.submission_id)}">Padam Draf</button>`:'-'}</td></tr>`).join('')}
+  ${rows.map(r=>`<tr><td>${esc(r.staff_name)}</td><td>${esc(r.instrument_title||r.instrument_id)}</td><td><span class="badge ${r.status==='SUBMITTED'?'ok':'warn'}">${esc(r.status)}</span></td><td>${esc(r.tarikh_hantar||'-')}</td><td>${r.pdf_url?`<a class="btn btn-light" target="_blank" href="${esc(r.pdf_url)}">Buka</a>`:(r.status==='SUBMITTED'?`<button class="btn btn-light" data-gen-pdf="${esc(r.submission_id)}">Jana PDF</button>`:'-')}</td><td>${r.status==='DRAFT'?`<button class="btn btn-danger" data-del-draft="${esc(r.submission_id)}">Padam Draf</button>`:'-'}</td></tr>`).join('')}
   </tbody></table></div>`;
   $$('[data-del-draft]').forEach(b=>b.onclick=async()=>{
     if(!confirm('Padam draf ini?')) return;
@@ -599,6 +669,13 @@ async function viewSubmissions(){
     if(!res.ok){toast(res.message||res.error||'Gagal padam draf.');return}
     toast('Draf dipadam.');
     await viewSubmissions();
+  });  $$('[data-gen-pdf]').forEach(b=>b.onclick=async()=>{
+    try{
+      const res=await post('generate_pdf',{submission_id:b.dataset.genPdf},{loading:true,title:'Menjana PDF…',desc:'Sedang menyediakan PDF hantaran.',timeoutMs:90000});
+      if(!res.ok){toast(res.message||res.error||'Gagal jana PDF.');return}
+      toast('PDF berjaya dijana.');
+      await viewSubmissions();
+    }catch(err){toast('PDF mengambil masa terlalu lama. Cuba jana semula.')}
   });
 }
 
