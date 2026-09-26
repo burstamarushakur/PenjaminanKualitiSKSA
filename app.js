@@ -1,4 +1,4 @@
-// v2.2: PDF output uses original official KPM PDF as template via same-origin Vercel proxy.
+// v2.3: PDF output uses original official KPM PDF as template via same-origin Vercel proxy.
 import { createClient } from 'https://esm.sh/@neondatabase/neon-js';
 
 
@@ -785,14 +785,50 @@ async function submissionDetail(submissionId){
 
 
 const KPM_TEMPLATE_MARKERS = {
-  'PBD-A': ['INSTRUMEN PENJAMINAN MUTU PBD_SLT', 'LAMPIRAN A'],
-  'PBD-B': ['INSTRUMEN PENJAMINAN MUTU PBD_ML', 'LAMPIRAN B'],
-  'PBD-C': ['INSTRUMEN PENJAMINAN MUTU PBD_GMP', 'LAMPIRAN C'],
-  'PAJSK-A': ['INSTRUMEN PENJAMINAN MUTU PAJSK_SLT', 'LAMPIRAN A'],
-  'PAJSK-B': ['INSTRUMEN PENJAMINAN MUTU PAJSK_GURU KOKURIKULUM', 'LAMPIRAN B'],
-  'SEGAK-A': ['INSTRUMEN PENJAMINAN MUTU SEGAK& BMI5-9T_SLT', 'LAMPIRAN A'],
-  'SEGAK-B': ['INSTRUMEN PENJAMINAN MUTU SEGAK & BMI 5-9T_ML', 'LAMPIRAN B'],
-  'SEGAK-C': ['INSTRUMEN PENJAMINAN MUTU SEGAK & BMI5-9T_GMP/GPRA', 'LAMPIRAN C']
+  'PBD-A': {
+    headings: ['INSTRUMEN PENJAMINAN MUTU PBD_SLT'],
+    lampiran: 'LAMPIRAN A'
+  },
+  'PBD-B': {
+    headings: ['INSTRUMEN PENJAMINAN MUTU PBD_ML'],
+    lampiran: 'LAMPIRAN B'
+  },
+  'PBD-C': {
+    headings: ['INSTRUMEN PENJAMINAN MUTU PBD_GMP'],
+    lampiran: 'LAMPIRAN C'
+  },
+  'PPSI-A': {
+    headings: ['SENARAI SEMAK PENJAMINAN MUTU PPSI_PGB', 'SENARAI SEMAK PENJAMINAN MUTU PPSI PGB'],
+    lampiran: 'LAMPIRAN A'
+  },
+  'PPSI-B': {
+    headings: ['SENARAI SEMAK PENJAMINAN MUTU PPSI_GPK HEM', 'SENARAI SEMAK PENJAMINAN MUTU PPSI GPK HEM'],
+    lampiran: 'LAMPIRAN B'
+  },
+  'PPSI-C': {
+    headings: ['INSTRUMEN PENJAMINAN MUTU PPSI_GBK', 'INSTRUMEN PENJAMINAN MUTU PPSI GBK'],
+    lampiran: 'LAMPIRAN C'
+  },
+  'PAJSK-A': {
+    headings: ['INSTRUMEN PENJAMINAN MUTU PAJSK_SLT'],
+    lampiran: 'LAMPIRAN A'
+  },
+  'PAJSK-B': {
+    headings: ['INSTRUMEN PENJAMINAN MUTU PAJSK_GURU KOKURIKULUM', 'INSTRUMEN PENJAMINAN MUTU PAJSK GURU KOKURIKULUM'],
+    lampiran: 'LAMPIRAN B'
+  },
+  'SEGAK-A': {
+    headings: ['INSTRUMEN PENJAMINAN MUTU SEGAK& BMI5-9T_SLT', 'INSTRUMEN PENJAMINAN MUTU SEGAK & BMI 5-9T SLT'],
+    lampiran: 'LAMPIRAN A'
+  },
+  'SEGAK-B': {
+    headings: ['INSTRUMEN PENJAMINAN MUTU SEGAK & BMI 5-9T_ML', 'INSTRUMEN PENJAMINAN MUTU SEGAK & BMI 5-9T ML'],
+    lampiran: 'LAMPIRAN B'
+  },
+  'SEGAK-C': {
+    headings: ['INSTRUMEN PENJAMINAN MUTU SEGAK & BMI5-9T_GMP/GPRA', 'INSTRUMEN PENJAMINAN MUTU SEGAK & BMI 5-9T GMP/GPRA'],
+    lampiran: 'LAMPIRAN C'
+  }
 };
 
 let kpmPdfLibPromise=null;
@@ -805,6 +841,19 @@ function normPdfText(v){
     .replace(/\s+/g,' ')
     .trim()
     .toUpperCase();
+}
+
+function compactPdfText(v){
+  return normPdfText(v).replace(/[^A-Z0-9]/g,'');
+}
+
+function templateStartMatches(text, template){
+  const compact=compactPdfText(text);
+  const hasHeading=(template.headings||[]).some(h=>compact.includes(compactPdfText(h)));
+  const hasLampiran=compact.includes(compactPdfText(template.lampiran||''));
+  // Every instrument starts with Bahagian A. This prevents matching continuation pages.
+  const hasBahagianA=compact.includes(compactPdfText('BAHAGIAN A'));
+  return hasHeading && hasLampiran && hasBahagianA;
 }
 
 async function loadPdfLib(){
@@ -834,34 +883,45 @@ async function loadOfficialKpmPdf(){
 
 async function extractKpmPages(sourceBytes, instrumentId){
   const pdfjs=await loadPdfJs();
-  const marker=KPM_TEMPLATE_MARKERS[instrumentId];
-  if(!marker) throw new Error(`Template rasmi ${instrumentId} belum dipetakan.`);
+  const targetTemplate=KPM_TEMPLATE_MARKERS[instrumentId];
+  if(!targetTemplate) throw new Error(`Template rasmi ${instrumentId} belum dipetakan.`);
 
   const loading=pdfjs.getDocument({data:new Uint8Array(sourceBytes)});
   const doc=await loading.promise;
   const pages=[];
-  let startPage=0, endPage=0;
+  const starts={};
 
+  // Scan the official KPM PDF once and discover the START page of all 11 instruments.
+  // Do not depend on "-TAMAT-" because PDF text extraction may split the word/punctuation.
   for(let p=1;p<=doc.numPages;p++){
     const page=await doc.getPage(p);
     const tc=await page.getTextContent();
     const text=normPdfText(tc.items.map(x=>x.str).join(' '));
     pages.push({pageNo:p,page,text,items:tc.items});
-    const hasMarker=text.includes(normPdfText(marker[0])) && text.includes(normPdfText(marker[1]));
-    if(!startPage && hasMarker) startPage=p;
-    if(startPage && p>=startPage && text.includes('-TAMAT-')){
-      endPage=p;
-      break;
+
+    for(const [id,tpl] of Object.entries(KPM_TEMPLATE_MARKERS)){
+      if(!starts[id] && templateStartMatches(text,tpl)) starts[id]=p;
     }
   }
 
-  if(!startPage) throw new Error(`Halaman rasmi KPM untuk ${instrumentId} tidak dijumpai.`);
-  if(!endPage) throw new Error(`Penghujung borang rasmi KPM untuk ${instrumentId} tidak dijumpai.`);
+  const startPage=starts[instrumentId]||0;
+  if(!startPage){
+    const found=Object.entries(starts).sort((a,b)=>a[1]-b[1]).map(([id,p])=>`${id}:${p}`).join(', ');
+    throw new Error(`Halaman rasmi KPM untuk ${instrumentId} tidak dijumpai. Dikesan: ${found||'tiada'}.`);
+  }
+
+  // The current form ends immediately before the next instrument starts.
+  // For the last instrument, use the final page of the official KPM PDF.
+  const nextStarts=Object.values(starts).filter(p=>p>startPage).sort((a,b)=>a-b);
+  const endPage=nextStarts.length ? nextStarts[0]-1 : doc.numPages;
+
+  if(endPage<startPage) throw new Error(`Julat halaman rasmi ${instrumentId} tidak sah.`);
 
   return {
     startPage,endPage,
     pages:pages.filter(x=>x.pageNo>=startPage && x.pageNo<=endPage),
-    pdfjsDoc:doc
+    pdfjsDoc:doc,
+    detectedStarts:starts
   };
 }
 
@@ -916,19 +976,39 @@ function findAnswerTarget(pageInfo, anchor, item){
   const wanted=normPdfText(answerTextFor(item));
   if(!wanted) return null;
 
-  const candidates=pageInfo.items.map((it,idx)=>({
-    it,idx,s:normPdfText(it.str),
-    x:it.transform?.[4]||0,y:it.transform?.[5]||0,w:it.width||0,h:Math.abs(it.transform?.[3]||10)
-  })).filter(c=>{
-    if(c.s!==wanted) return false;
-    const dy=Math.abs(c.y-anchor.y);
-    return dy<=24 && c.x>anchor.x+40;
-  });
+  const candidates=[];
+  for(const [idx,it] of pageInfo.items.entries()){
+    const x=it.transform?.[4]||0;
+    const y=it.transform?.[5]||0;
+    const w=it.width||0;
+    const h=Math.abs(it.transform?.[3]||10);
+    if(Math.abs(y-anchor.y)>24 || x<=anchor.x+40) continue;
+
+    const raw=normPdfText(it.str);
+    if(raw===wanted){
+      candidates.push({it,idx,s:raw,x,y,w,h,score:0});
+      continue;
+    }
+
+    // PDF.js may group the answer choices into one text item: "1 2 3 4 5" or "Ya Tidak".
+    const tokens=raw.split(/\s+/).map(t=>t.replace(/[^A-Z0-9]/g,'')).filter(Boolean);
+    const wantedToken=wanted.replace(/[^A-Z0-9]/g,'');
+    const ti=tokens.indexOf(wantedToken);
+    if(ti>=0 && tokens.length>=2){
+      const cellW=(w||Math.max(30,tokens.length*12))/tokens.length;
+      candidates.push({
+        it,idx,s:raw,
+        x:x+ti*cellW,
+        y,w:cellW,h,
+        score:2
+      });
+    }
+  }
 
   if(!candidates.length) return null;
   candidates.sort((a,b)=>{
-    const da=Math.abs(a.y-anchor.y)+(a.x<anchor.x?500:0);
-    const db=Math.abs(b.y-anchor.y)+(b.x<anchor.x?500:0);
+    const da=Math.abs(a.y-anchor.y)+(a.x<anchor.x?500:0)+a.score;
+    const db=Math.abs(b.y-anchor.y)+(b.x<anchor.x?500:0)+b.score;
     return da-db;
   });
   return candidates[0];
@@ -973,7 +1053,11 @@ async function stampOfficialKpmPdf(detail){
   // Isi maklumat asas pada halaman pertama tanpa mengubah layout asal KPM.
   const firstInfo=pageInfos[0];
   const firstOut=outDoc.getPage(0);
-  const metaPairs=[
+  const metaPairs=instrumentId.startsWith('SEGAK-') ? [
+    {labels:['NAMA SEKOLAH:','NAMA SEKOLAH :','NAMA SEKOLAH'],value:'SK SG ABONG'},
+    {labels:['NAMA GURU:','NAMA GURU :','NAMA GURU'],value:sub.staff_name||''},
+    {labels:['JAWATAN:','JAWATAN :','JAWATAN'],value:sub.job_title||sub.target_role||''}
+  ] : [
     {labels:['NAMA:','NAMA :','NAMA'],value:sub.staff_name||''},
     {labels:['JAWATAN:','JAWATAN :','JAWATAN'],value:sub.job_title||sub.target_role||''}
   ];
