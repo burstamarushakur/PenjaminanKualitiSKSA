@@ -448,13 +448,23 @@ async function viewDashboard(){
   </div>`;
 
   $$('[data-dashboard-route]').forEach(el=>el.onclick=e=>{
-    if(e.target.closest('button')) return;
+    // Hanya abaikan klik butang "Buka Instrumen Saya" yang berada dalam kad Sesi.
+    // Kad statistik sendiri ialah <button>, jadi jangan tapis semua button.
+    if(e.target.closest('#openMyInstruments')) return;
+
     const route=el.dataset.dashboardRoute;
     const filter=el.dataset.dashboardFilter||'ALL';
+
     if(route==='submissions') state.submissionFilter=filter;
+    else state.submissionFilter='ALL';
+
     go(route);
   });
-  $('#openMyInstruments').onclick=e=>{e.stopPropagation();go('assignments')};
+
+  $('#openMyInstruments').onclick=e=>{
+    e.stopPropagation();
+    go('assignments');
+  };
 }
 
 function stat(label,value,route,filter='ALL'){
