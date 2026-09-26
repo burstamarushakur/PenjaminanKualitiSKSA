@@ -1,4 +1,4 @@
-// v2.3: PDF output uses original official KPM PDF as template via same-origin Vercel proxy.
+// v2.5: official KPM form fields + section-aware PDF stamping for all 11 instruments.
 import { createClient } from 'https://esm.sh/@neondatabase/neon-js';
 
 
@@ -26,6 +26,8 @@ const state = {
   currentResponses: {},
   saveTimer: null,
   signatureHasInk: false,
+  currentMetadata: {},
+  metaSaveTimer: null,
   submissionFilter: 'ALL'
 };
 
@@ -123,6 +125,12 @@ async function post(action,payload={},opts={}){
       p_submission_id:payload.submission_id||null,
       p_responses:payload.responses||[]
     });
+    if(action==='save_metadata') return await rpc_('pk_save_metadata',{
+      p_token:state.token,
+      p_assignment_id:payload.assignment_id,
+      p_submission_id:payload.submission_id||null,
+      p_metadata:payload.metadata||{}
+    });
     if(action==='submit_submission') return await rpc_('pk_submit',{
       p_token:state.token,
       p_submission_id:payload.submission_id,
@@ -151,6 +159,127 @@ async function post(action,payload={},opts={}){
   }finally{
     if(loading) hideLoader();
   }
+}
+
+
+const INSTRUMENT_REQUIREMENTS = {
+  'PBD-A': {metaTitle:'BAHAGIAN A: MAKLUMAT PENGETUA/GURU BESAR/GURU PENOLONG KANAN',fields:['subject_taught','year_form']},
+  'PBD-B': {metaTitle:'BAHAGIAN A: MAKLUMAT GURU KANAN MATA PELAJARAN/KETUA PANITIA',fields:['subject_taught','year_form']},
+  'PBD-C': {metaTitle:'BAHAGIAN A: MAKLUMAT GURU MATA PELAJARAN',fields:['subject_taught','year_form']},
+  'PPSI-A': {metaTitle:'BAHAGIAN A: MAKLUMAT PENGETUA/GURU BESAR',fields:[]},
+  'PPSI-B': {metaTitle:'BAHAGIAN A: MAKLUMAT GURU PENOLONG KANAN HAL EHWAL MURID',fields:[]},
+  'PPSI-C': {metaTitle:'BAHAGIAN A: MAKLUMAT GURU BIMBINGAN DAN KAUNSELING/GURU BIMBINGAN LANTIKAN DALAMAN',fields:[]},
+  'PAJSK-A': {metaTitle:'BAHAGIAN A: MAKLUMAT PENGETUA/GURU BESAR/GURU PENOLONG KANAN',fields:['school_name']},
+  'PAJSK-B': {metaTitle:'BAHAGIAN A: MAKLUMAT GURU KOKURIKULUM',fields:['kokurikulum_unit']},
+  'SEGAK-A': {metaTitle:'BAHAGIAN A: MAKLUMAT PENGETUA/GURU BESAR/GURU PENOLONG KANAN PENTADBIRAN',fields:['school_name','school_code','role_option','scope'],roles:['PENGETUA','GURU BESAR','GURU PENOLONG KANAN PENTADBIRAN']},
+  'SEGAK-B': {metaTitle:'BAHAGIAN A: MAKLUMAT GURU KANAN MATA PELAJARAN/KETUA PANITIA PENDIDIKAN JASMANI DAN PENDIDIKAN KESIHATAN',fields:['school_name','school_code','role_option','scope'],roles:['GURU KANAN MATA PELAJARAN','KETUA PANITIA']},
+  'SEGAK-C': {metaTitle:'BAHAGIAN A: MAKLUMAT GURU MATA PELAJARAN PJPK/GURU PRASEKOLAH/GURU PPKI',fields:['school_name','school_code','role_option','scope'],roles:['GMP PJPK','GURU PRASEKOLAH','GURU PPKI']}
+};
+
+const META_LABELS = {
+  subject_taught:'Mata Pelajaran Diajar',
+  year_form:'Tahun/Tingkatan',
+  school_name:'Nama Sekolah',
+  school_code:'Kod Sekolah',
+  role_option:'Jawatan',
+  scope:'Skop Pelaksanaan',
+  kokurikulum_unit:'Kelab Persatuan / Sukan Permainan / Pasukan Badan Beruniform'
+};
+
+const SEGAK_SCOPE_OPTIONS = [
+  ['SEGAK_SM','SEGAK - SM'],['SEGAK_SR','SEGAK - SR'],['BMI_SR','BMI 5-9T - SR'],
+  ['BMI_PRASEKOLAH','BMI 5-9T - Prasekolah'],['BMI_PPKI','BMI 5-9T - PPKI']
+];
+
+function defaultMetadata(instrumentId,existing={}){
+  const m={...(existing||{})};
+  const fields=INSTRUMENT_REQUIREMENTS[instrumentId]?.fields||[];
+
+  // Maklumat sekolah adalah tetap untuk semua instrumen SK Sungai Abong.
+  // Sentiasa override nilai lama supaya tiada variasi ejaan/kod dalam borang.
+  if(fields.includes('school_name')){
+    m.school_name=window.PK_CONFIG.SCHOOL_OFFICIAL_NAME||'SEKOLAH KEBANGSAAN SUNGAI ABONG';
+  }
+  if(fields.includes('school_code')){
+    m.school_code=window.PK_CONFIG.SCHOOL_CODE||'JBA5095';
+  }
+
+  if(instrumentId.startsWith('SEGAK-') && !Array.isArray(m.scope)) m.scope=[];
+  return m;
+}
+
+function sectionInstructionHtml(bahagian){
+  if(bahagian==='B') return `<div class="official-instruction"><b>ARAHAN BAHAGIAN B</b><div>i. Tandakan (√) pada ruangan <b>Ya</b> atau <b>Tidak</b>.</div><div>ii. Bulatkan skala penilaian: <b>1</b> Sangat Tidak Menguasai/Memahami · <b>2</b> Tidak Menguasai/Memahami · <b>3</b> Kurang Menguasai/Memahami · <b>4</b> Menguasai/Memahami · <b>5</b> Sangat Menguasai/Memahami.</div></div>`;
+  if(bahagian==='C') return `<div class="official-instruction"><b>ARAHAN BAHAGIAN C</b><div>i. Tandakan (√) pada ruangan <b>Ya</b> atau <b>Tidak</b>.</div><div>ii. Bulatkan skala penilaian: <b>1</b> Tidak pernah · <b>2</b> Jarang-jarang · <b>3</b> Kadang-kadang · <b>4</b> Kerap · <b>5</b> Sangat kerap.</div></div>`;
+  return '';
+}
+
+function renderMetadataCard(a,locked){
+  const id=a.instrument_id;
+  const req=INSTRUMENT_REQUIREMENTS[id]||{metaTitle:'BAHAGIAN A: MAKLUMAT PERSONEL',fields:[]};
+  const m=state.currentMetadata||{};
+  const dis=locked?'disabled':'';
+  const fieldHtml=[];
+  fieldHtml.push(`<div><label>Nama</label><input disabled value="${esc(state.user?.nama||'')}"></div>`);
+  fieldHtml.push(`<div><label>Jawatan</label><input disabled value="${esc(state.user?.jawatan_hakiki||'')}"></div>`);
+
+  for(const f of req.fields){
+    if(f==='subject_taught') fieldHtml.push(`<div><label>Mata Pelajaran Diajar <span class="req">*</span></label><input ${dis} data-meta="subject_taught" value="${esc(m.subject_taught||'')}" placeholder="Contoh: Bahasa Inggeris"></div>`);
+    else if(f==='year_form') fieldHtml.push(`<div><label>Tahun/Tingkatan <span class="req">*</span></label><input ${dis} data-meta="year_form" value="${esc(m.year_form||'')}" placeholder="Contoh: Tahun 3 / Tahun 4"></div>`);
+    else if(f==='school_name') fieldHtml.push(`<div><label>${id==='PAJSK-A'?'Sekolah':'Nama Sekolah'} <span class="auto-tag">AUTO</span></label><input readonly data-meta="school_name" value="${esc(window.PK_CONFIG.SCHOOL_OFFICIAL_NAME||'SEKOLAH KEBANGSAAN SUNGAI ABONG')}" title="Diisi automatik oleh sistem"></div>`);
+    else if(f==='school_code') fieldHtml.push(`<div><label>Kod Sekolah <span class="auto-tag">AUTO</span></label><input readonly data-meta="school_code" value="${esc(window.PK_CONFIG.SCHOOL_CODE||'JBA5095')}" title="Diisi automatik oleh sistem"></div>`);
+    else if(f==='kokurikulum_unit') fieldHtml.push(`<div class="meta-wide"><label>Kelab Persatuan / Sukan Permainan / Pasukan Badan Beruniform <span class="req">*</span></label><input ${dis} data-meta="kokurikulum_unit" value="${esc(m.kokurikulum_unit||'')}" placeholder="Contoh: Pengakap / Bola Jaring / Kelab Keselamatan Jalan Raya"></div>`);
+    else if(f==='role_option') fieldHtml.push(`<div><label>Jawatan Dalam Instrumen <span class="req">*</span></label><select ${dis} data-meta="role_option"><option value="">-- Pilih --</option>${(req.roles||[]).map(x=>`<option value="${esc(x)}" ${String(m.role_option||'')===x?'selected':''}>${esc(x)}</option>`).join('')}</select></div>`);
+    else if(f==='scope') fieldHtml.push(`<div class="meta-wide"><label>Skop Pelaksanaan <span class="req">*</span></label><div class="scope-grid">${SEGAK_SCOPE_OPTIONS.map(([v,l])=>`<label class="scope-option"><input ${dis} type="checkbox" data-meta-scope="${esc(v)}" ${(m.scope||[]).includes(v)?'checked':''}><span>${esc(l)}</span></label>`).join('')}</div></div>`);
+  }
+
+  return `<div class="card metadata-card"><div class="section-title" style="margin-top:0"><h2>${esc(req.metaTitle)}</h2></div><div class="meta-form-grid">${fieldHtml.join('')}</div><div class="muted meta-note">Maklumat sekolah bertanda AUTO diisi tetap oleh sistem. Maklumat bertanda * perlu dilengkapkan oleh pemilik instrumen sebelum hantar.</div></div>`;
+}
+
+function collectMetadataFromDom(){
+  const m={...(state.currentMetadata||{})};
+  $$('[data-meta]').forEach(el=>m[el.dataset.meta]=el.value.trim());
+  const scopes=$$('[data-meta-scope]:checked').map(el=>el.dataset.metaScope);
+  if($$('[data-meta-scope]').length) m.scope=scopes;
+
+  const fields=INSTRUMENT_REQUIREMENTS[state.currentAssignment?.instrument_id]?.fields||[];
+  if(fields.includes('school_name')) m.school_name=window.PK_CONFIG.SCHOOL_OFFICIAL_NAME||'SEKOLAH KEBANGSAAN SUNGAI ABONG';
+  if(fields.includes('school_code')) m.school_code=window.PK_CONFIG.SCHOOL_CODE||'JBA5095';
+
+  state.currentMetadata=m;
+  return m;
+}
+
+function handleMetadataChange(){
+  collectMetadataFromDom();
+  const ss=$('#saveState'); if(ss) ss.textContent='Belum disimpan…';
+  clearTimeout(state.metaSaveTimer);
+  state.metaSaveTimer=setTimeout(saveCurrentMetadata,650);
+}
+
+async function saveCurrentMetadata(){
+  if(!state.currentAssignment) return {ok:true};
+  const metadata=collectMetadataFromDom();
+  const payload={assignment_id:state.currentAssignment.assignment_id,metadata};
+  if(state.currentSubmission?.submission_id) payload.submission_id=state.currentSubmission.submission_id;
+  const out=await post('save_metadata',payload);
+  if(out.ok && out.submission_id){
+    if(!state.currentSubmission) state.currentSubmission={submission_id:out.submission_id,status:'DRAFT',metadata:out.metadata||metadata};
+    else state.currentSubmission={...state.currentSubmission,metadata:out.metadata||metadata};
+  }
+  const ss=$('#saveState'); if(ss) ss.textContent=out.ok?'Disimpan':'Gagal simpan';
+  return out;
+}
+
+function missingMetadataFields(instrumentId,meta){
+  const req=INSTRUMENT_REQUIREMENTS[instrumentId]?.fields||[];
+  const missing=[];
+  for(const f of req){
+    if(f==='school_name' || f==='school_code') continue;
+    if(f==='scope'){if(!Array.isArray(meta.scope)||!meta.scope.length) missing.push(f);}
+    else if(!String(meta[f]||'').trim()) missing.push(f);
+  }
+  return missing;
 }
 
 function setSession(data){
@@ -410,6 +539,7 @@ async function openAssignment(id,rows){
 
   state.currentAssignment=out.assignment;
   state.currentSubmission=out.submission;
+  state.currentMetadata=defaultMetadata(out.assignment.instrument_id,out.submission?.metadata||{});
   state.currentItems=out.items||[];
   state.currentResponses={};
   (out.responses||[]).forEach(r=>state.currentResponses[r.item_id]=r);
@@ -422,11 +552,16 @@ function renderForm(a,sub){
   const status=sub?.status||'OPEN';
   const locked=String(status).toUpperCase()==='SUBMITTED';
   let lastSection='';
+  let lastBahagian='';
   const html=state.currentItems.map(item=>{
     const r=state.currentResponses[item.item_id]||{};
     let section='';
     const sec=`${item.bahagian} — ${item.seksyen}`;
-    if(sec!==lastSection){lastSection=sec;section=`<div class="section-title"><h2>${esc(sec)}</h2></div>`}
+    if(item.bahagian!==lastBahagian){
+      lastBahagian=item.bahagian;
+      section+=sectionInstructionHtml(item.bahagian);
+    }
+    if(sec!==lastSection){lastSection=sec;section+=`<div class="section-title"><h2>${esc(sec)}</h2></div>`}
     return section+renderItem(item,r,locked);
   }).join('');
 
@@ -436,6 +571,7 @@ function renderForm(a,sub){
     <span id="saveState" class="muted"></span>
     ${locked&&sub?.submission_id?`<button class="btn btn-light" id="downloadOwnPdf">Muat Turun PDF</button><button class="btn btn-light btn-update" id="reopenOwn">KEMASKINI</button><button class="btn btn-danger" id="deleteOwn">PADAM</button>`:''}
   </div>
+  ${renderMetadataCard(a,locked)}
   <div class="card">${html}</div>
   ${locked?`<div class="card signature-summary" style="margin-top:16px">
       <b>Tandatangan Digital</b>
@@ -463,6 +599,8 @@ function renderForm(a,sub){
       el.onchange=handleAnswerChange;
       if(el.tagName==='TEXTAREA') el.oninput=handleAnswerChange;
     });
+    $$('[data-meta]').forEach(el=>{el.onchange=handleMetadataChange;el.oninput=handleMetadataChange});
+    $$('[data-meta-scope]').forEach(el=>el.onchange=handleMetadataChange);
     initSignaturePad();
     $('#submitForm').onclick=submitCurrent;
   }
@@ -535,7 +673,7 @@ async function saveCurrentResponses(){
   if(sub?.submission_id) payload.submission_id=sub.submission_id;
   const out=await post('save_responses',payload);
   if(out.ok && out.submission_id && !state.currentSubmission){
-    state.currentSubmission={submission_id:out.submission_id,status:'DRAFT'};
+    state.currentSubmission={submission_id:out.submission_id,status:'DRAFT',metadata:state.currentMetadata};
   }
   $('#saveState').textContent=out.ok?'Disimpan':'Gagal simpan';
   return out;
@@ -545,11 +683,19 @@ async function submitCurrent(){
   const btn=$('#submitForm');
   if(btn){btn.disabled=true;btn.textContent='Menghantar…'}
   try{
+    const meta=collectMetadataFromDom();
+    const missingMeta=missingMetadataFields(state.currentAssignment.instrument_id,meta);
+    if(missingMeta.length){
+      toast(`Lengkapkan dahulu: ${missingMeta.map(x=>META_LABELS[x]||x).join(', ')}.`);
+      return;
+    }
+
+    await saveCurrentMetadata();
     await saveCurrentResponses();
     const signer=$('#signer').value.trim();
     if(!signer){toast('Isi nama penandatangan.');return}
     if(!state.signatureHasInk){toast('Sila tandatangan dalam kotak Tandatangan Digital.');return}
-    if(!state.currentSubmission?.submission_id){toast('Jawab sekurang-kurangnya satu item dahulu sebelum hantar.');return}
+    if(!state.currentSubmission?.submission_id){toast('Lengkapkan maklumat dan jawab instrumen dahulu sebelum hantar.');return}
 
     const out=await post('submit_submission',{
       submission_id:state.currentSubmission.submission_id,
@@ -564,11 +710,12 @@ async function submitCurrent(){
 
     if(!out.ok){
       if(out.error==='INCOMPLETE') toast(`Masih ada ${out.missing_item_ids.length} item wajib belum dijawab.`);
+      else if(out.error==='METADATA_INCOMPLETE') toast(`Maklumat Bahagian A belum lengkap: ${(out.missing_fields||[]).map(x=>META_LABELS[x]||x).join(', ')}.`);
       else toast(out.message||out.error);
       return;
     }
 
-    state.currentSubmission={...state.currentSubmission,status:'SUBMITTED'};
+    state.currentSubmission={...state.currentSubmission,status:'SUBMITTED',metadata:state.currentMetadata};
     toast('Hantaran berjaya disimpan dalam Neon.');
     await refreshAssignments(true);
     await viewAssignments();
@@ -938,35 +1085,43 @@ function textCandidates(pageInfo, exactText){
     .filter(x=>x.s===target);
 }
 
-function sequentialItemAnchors(pageInfos, items){
-  const all=[];
-  pageInfos.forEach((p,pi)=>{
-    p.items.forEach((it,idx)=>{
-      all.push({pi,idx,s:normPdfText(it.str),x:it.transform?.[4]||0,y:it.transform?.[5]||0,w:it.width||0,h:Math.abs(it.transform?.[3]||10),it});
-    });
-  });
-
-  let cursor=-1;
+function sectionAwareItemAnchors(pageInfos, items){
+  const cPageIndex=pageInfos.findIndex(p=>compactPdfText(p.text).includes(compactPdfText('BAHAGIAN C')));
+  const mappedPages=pageInfos.map((p,pi)=>({
+    pi,
+    entries:p.items.map((it,idx)=>({it,idx,s:normPdfText(it.str),x:it.transform?.[4]||0,y:it.transform?.[5]||0,w:it.width||0,h:Math.abs(it.transform?.[3]||10)}))
+  }));
   const anchors=new Map();
+
   for(const q of items){
-    const n=normPdfText(q.no_item);
-    let found=-1;
-    for(let i=cursor+1;i<all.length;i++){
-      if(all[i].s===n){ found=i; break; }
+    const section=String(q.bahagian||'').toUpperCase();
+    let pages=mappedPages;
+    if(cPageIndex>=0){
+      if(section==='B') pages=mappedPages.filter(p=>p.pi<cPageIndex);
+      else if(section==='C') pages=mappedPages.filter(p=>p.pi>=cPageIndex);
     }
 
-    if(found<0){
-      const words=normPdfText(q.pernyataan).split(' ').filter(w=>w.length>=5).slice(0,3);
-      for(let i=cursor+1;i<all.length;i++){
-        const s=all[i].s;
-        if(words.some(w=>s.includes(w))){ found=i; break; }
+    const no=normPdfText(q.no_item);
+    let candidates=[];
+    for(const p of pages){
+      for(const e of p.entries){
+        if(e.s===no) candidates.push({...e,pi:p.pi});
       }
     }
 
-    if(found>=0){
-      anchors.set(q.item_id,all[found]);
-      cursor=found;
+    // If exact item number extraction fails, fall back to the first distinctive statement words.
+    if(!candidates.length){
+      const words=normPdfText(q.pernyataan).split(/\s+/).filter(w=>w.length>=6).slice(0,4);
+      for(const p of pages){
+        for(const e of p.entries){
+          const score=words.reduce((n,w)=>n+(e.s.includes(w)?1:0),0);
+          if(score>=2) candidates.push({...e,pi:p.pi,wordScore:score});
+        }
+      }
+      candidates.sort((a,b)=>(b.wordScore||0)-(a.wordScore||0));
     }
+
+    if(candidates.length) anchors.set(q.item_id,candidates[0]);
   }
   return anchors;
 }
@@ -988,7 +1143,9 @@ function findAnswerTarget(pageInfo, anchor, item){
     const y=it.transform?.[5]||0;
     const w=it.width||0;
     const h=Math.abs(it.transform?.[3]||10);
-    if(Math.abs(y-anchor.y)>24 || x<=anchor.x+40) continue;
+    // Answer columns are well to the right of the item number/text. Use a broad Y range,
+    // then choose the nearest row. This handles tall/wrapped KPM table rows reliably.
+    if(Math.abs(y-anchor.y)>75 || x<=anchor.x+150) continue;
 
     const raw=normPdfText(it.str);
     if(raw===wanted){
@@ -996,28 +1153,37 @@ function findAnswerTarget(pageInfo, anchor, item){
       continue;
     }
 
-    // PDF.js may group the answer choices into one text item: "1 2 3 4 5" or "Ya Tidak".
     const tokens=raw.split(/\s+/).map(t=>t.replace(/[^A-Z0-9]/g,'')).filter(Boolean);
     const wantedToken=wanted.replace(/[^A-Z0-9]/g,'');
     const ti=tokens.indexOf(wantedToken);
     if(ti>=0 && tokens.length>=2){
       const cellW=(w||Math.max(30,tokens.length*12))/tokens.length;
-      candidates.push({
-        it,idx,s:raw,
-        x:x+ti*cellW,
-        y,w:cellW,h,
-        score:2
-      });
+      candidates.push({it,idx,s:raw,x:x+ti*cellW,y,w:cellW,h,score:2});
     }
   }
 
   if(!candidates.length) return null;
-  candidates.sort((a,b)=>{
-    const da=Math.abs(a.y-anchor.y)+(a.x<anchor.x?500:0)+a.score;
-    const db=Math.abs(b.y-anchor.y)+(b.x<anchor.x?500:0)+b.score;
-    return da-db;
-  });
+  candidates.sort((a,b)=>Math.abs(a.y-anchor.y)-Math.abs(b.y-anchor.y) || a.score-b.score);
   return candidates[0];
+}
+
+function drawVectorCheck(page,x,y,size=7,color){
+  page.drawLine({start:{x:x-size*0.55,y:y},end:{x:x-size*0.12,y:y-size*0.42},thickness:1.6,color});
+  page.drawLine({start:{x:x-size*0.12,y:y-size*0.42},end:{x:x+size*0.65,y:y+size*0.48},thickness:1.6,color});
+}
+
+function markTextChoice(pageInfo,outPage,labels,color,side='left'){
+  const target=findLabel(pageInfo,labels);
+  if(!target) return false;
+  const x=side==='right'?target.x+target.w+9:Math.max(5,target.x-9);
+  const y=target.y+Math.max(target.h,8)*0.35;
+  drawVectorCheck(outPage,x,y,6,color);
+  return true;
+}
+
+function allExactText(pageInfo,label){
+  const t=normPdfText(label);
+  return pageInfo.items.map((it,idx)=>({it,idx,s:normPdfText(it.str),x:it.transform?.[4]||0,y:it.transform?.[5]||0,w:it.width||0,h:Math.abs(it.transform?.[3]||10)})).filter(x=>x.s===t).sort((a,b)=>b.y-a.y);
 }
 
 function findLabel(pageInfo, labels){
@@ -1059,30 +1225,67 @@ async function stampOfficialKpmPdf(detail){
   const black=rgb(0,0,0);
 
   const pageInfos=slice.pages;
-  const anchors=sequentialItemAnchors(pageInfos,items);
+  const anchors=sectionAwareItemAnchors(pageInfos,items);
 
-  // Isi maklumat asas pada halaman pertama tanpa mengubah layout asal KPM.
+  // BAHAGIAN A - isi semua medan yang diwajibkan oleh borang rasmi KPM.
   const firstInfo=pageInfos[0];
   const firstOut=outDoc.getPage(0);
-  const metaPairs=instrumentId.startsWith('SEGAK-') ? [
-    {labels:['NAMA SEKOLAH:','NAMA SEKOLAH :','NAMA SEKOLAH'],value:'SK SG ABONG'},
-    {labels:['NAMA GURU:','NAMA GURU :','NAMA GURU'],value:sub.staff_name||''},
-    {labels:['JAWATAN:','JAWATAN :','JAWATAN'],value:sub.job_title||sub.target_role||''}
-  ] : [
-    {labels:['NAMA:','NAMA :','NAMA'],value:sub.staff_name||''},
-    {labels:['JAWATAN:','JAWATAN :','JAWATAN'],value:sub.job_title||sub.target_role||''}
-  ];
-  for(const m of metaPairs){
-    const lab=findLabel(firstInfo,m.labels);
-    if(lab && m.value){
-      firstOut.drawText(String(m.value),{
-        x:Math.min(lab.x+lab.w+12, firstOut.getWidth()-260),
-        y:lab.y-1,size:9,font,color:black,maxWidth:250
-      });
+  const meta=sub.metadata||{};
+
+  function putAfter(labels,value,opts={}){
+    if(!String(value||'').trim()) return false;
+    const lab=findLabel(firstInfo,labels);
+    if(!lab) return false;
+    const x=opts.x ?? Math.min(lab.x+lab.w+(opts.gap??10), firstOut.getWidth()-(opts.maxWidth??300));
+    const y=opts.y ?? (lab.y-1);
+    firstOut.drawText(String(value),{x,y,size:opts.size||8.7,font:opts.bold?bold:font,color:black,maxWidth:opts.maxWidth||290});
+    return true;
+  }
+
+  if(instrumentId.startsWith('SEGAK-')){
+    putAfter(['NAMA SEKOLAH:','NAMA SEKOLAH :','NAMA SEKOLAH'],window.PK_CONFIG.SCHOOL_OFFICIAL_NAME||'SEKOLAH KEBANGSAAN SUNGAI ABONG');
+    putAfter(['KOD SEKOLAH:','KOD SEKOLAH :','KOD SEKOLAH'],window.PK_CONFIG.SCHOOL_CODE||'JBA5095',{maxWidth:140});
+    putAfter(['NAMA GURU:','NAMA GURU :','NAMA GURU','3. NAMA:','3. NAMA :'],sub.staff_name||'');
+
+    const roleMap={
+      'PENGETUA':['PENGETUA'],
+      'GURU BESAR':['GURU BESAR'],
+      'GURU PENOLONG KANAN PENTADBIRAN':['GURU PENOLONG KANAN PENTADBIRAN','PENOLONG KANAN PENTADBIRAN'],
+      'GURU KANAN MATA PELAJARAN':['GURU KANAN MATA PELAJARAN'],
+      'KETUA PANITIA':['KETUA PANITIA'],
+      'GMP PJPK':['GMP PJPK'],
+      'GURU PRASEKOLAH':['GURU PRASEKOLAH'],
+      'GURU PPKI':['GURU PPKI']
+    };
+    if(meta.role_option) markTextChoice(firstInfo,firstOut,roleMap[meta.role_option]||[meta.role_option],black,'left');
+
+    // Jadual skop di bahagian atas: SEGAK (SM/SR), BMI 5-9T (SR/Prasekolah/PPKI).
+    const scopes=new Set(Array.isArray(meta.scope)?meta.scope:[]);
+    const sm=allExactText(firstInfo,'SM');
+    const sr=allExactText(firstInfo,'SR');
+    const pra=allExactText(firstInfo,'Prasekolah');
+    const ppki=allExactText(firstInfo,'PPKI');
+    const markRight=t=>{if(!t)return;drawVectorCheck(firstOut,t.x+t.w+10,t.y+Math.max(t.h,8)*0.35,6,black)};
+    if(scopes.has('SEGAK_SM')) markRight(sm[0]);
+    if(scopes.has('SEGAK_SR')) markRight(sr[0]);
+    if(scopes.has('BMI_SR')) markRight(sr[1]);
+    if(scopes.has('BMI_PRASEKOLAH')) markRight(pra[0]);
+    if(scopes.has('BMI_PPKI')) markRight(ppki[0]);
+  }else{
+    putAfter(['NAMA:','NAMA :','1. NAMA:','1. NAMA :'],sub.staff_name||'');
+    putAfter(['JAWATAN:','JAWATAN :','2. JAWATAN:','2. JAWATAN :'],sub.job_title||sub.target_role||'');
+
+    if(instrumentId.startsWith('PBD-')){
+      putAfter(['MATA PELAJARAN DIAJAR:','MATA PELAJARAN DIAJAR :','3. MATA PELAJARAN DIAJAR:'],meta.subject_taught||'');
+      putAfter(['TAHUN/TINGKATAN:','TAHUN/TINGKATAN :','4. TAHUN/TINGKATAN:'],meta.year_form||'');
+    }else if(instrumentId==='PAJSK-A'){
+      putAfter(['SEKOLAH:','SEKOLAH :','3. SEKOLAH:'],window.PK_CONFIG.SCHOOL_OFFICIAL_NAME||'SEKOLAH KEBANGSAAN SUNGAI ABONG');
+    }else if(instrumentId==='PAJSK-B'){
+      putAfter(['KELAB PERSATUAN / SUKAN PERMAINAN / PASUKAN BADAN BERUNIFORM:','KELAB PERSATUAN','SUKAN PERMAINAN','PASUKAN BADAN BERUNIFORM'],meta.kokurikulum_unit||'',{maxWidth:330,size:8});
     }
   }
 
-  // Tandakan/bulatkan jawapan tepat pada ruangan asal PDF KPM.
+  // BAHAGIAN B & C - bulatkan skala; untuk Ya/Tidak gunakan tanda √ (bukan pangkah X).
   for(const q of items){
     const a=anchors.get(q.item_id);
     if(!a) continue;
@@ -1092,28 +1295,19 @@ async function stampOfficialKpmPdf(detail){
     const outPage=outDoc.getPage(a.pi);
 
     if(q.jenis_respons==='YA_TIDAK'){
-      const cx=target.x+Math.max(target.w,8)/2;
-      const cy=target.y+Math.max(target.h,8)/3;
-      const r=5;
-      outPage.drawLine({start:{x:cx-r,y:cy-r},end:{x:cx+r,y:cy+r},thickness:1.4,color:black});
-      outPage.drawLine({start:{x:cx-r,y:cy+r},end:{x:cx+r,y:cy-r},thickness:1.4,color:black});
+      // Letak √ sedikit di kiri perkataan Ya/Tidak supaya perkataan asal tidak ditutup.
+      const x=Math.max(5,target.x-8);
+      const y=target.y+Math.max(target.h,8)*0.35;
+      drawVectorCheck(outPage,x,y,6,black);
     }else{
       const cx=target.x+Math.max(target.w,6)/2;
       const cy=target.y+Math.max(target.h,8)/3;
-      outPage.drawEllipse({
-        x:cx,y:cy,
-        xScale:Math.max(7,target.w/2+4),
-        yScale:7,
-        borderColor:black,
-        borderWidth:1.3
-      });
+      outPage.drawEllipse({x:cx,y:cy,xScale:Math.max(7,target.w/2+4),yScale:7,borderColor:black,borderWidth:1.3});
     }
 
     if(String(q.catatan||'').trim()){
       const pageW=outPage.getWidth();
-      outPage.drawText(String(q.catatan).slice(0,80),{
-        x:pageW*0.82,y:a.y-1,size:6.8,font,color:black,maxWidth:pageW*0.16
-      });
+      outPage.drawText(String(q.catatan).slice(0,100),{x:pageW*0.82,y:a.y-1,size:6.6,font,color:black,maxWidth:pageW*0.16});
     }
   }
 
@@ -1166,6 +1360,10 @@ async function downloadSubmissionPdf(submissionId){
     const detail=await submissionDetail(submissionId);
     const sub=detail.submission;
     if(!sub || sub.status!=='SUBMITTED') throw new Error('PDF hanya tersedia selepas instrumen dihantar.');
+    const missingMeta=missingMetadataFields(sub.instrument_id,defaultMetadata(sub.instrument_id,sub.metadata||{}));
+    if(missingMeta.length){
+      throw new Error(`Borang lama ini belum lengkap Bahagian A (${missingMeta.map(x=>META_LABELS[x]||x).join(', ')}). Pemilik perlu klik KEMASKINI, lengkapkan maklumat dan Hantar semula.`);
+    }
 
     const bytes=await stampOfficialKpmPdf(detail);
     const blob=new Blob([bytes],{type:'application/pdf'});

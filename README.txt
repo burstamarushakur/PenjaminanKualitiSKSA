@@ -1,18 +1,17 @@
-PENJAMINAN KUALITI SKSA - NEON v2.4 PDF BUFFER FIX
+PENJAMINAN KUALITI SKSA - NEON v2.6 AUTO MAKLUMAT SEKOLAH
 
-FIX KRITIKAL
-- Baiki error:
-  "Cannot perform Construct on a detached ArrayBuffer"
-- PDF.js dan pdf-lib kini menerima salinan buffer berasingan.
-- Cache PDF rasmi KPM kini menyimpan Uint8Array dan mengeluarkan salinan baru setiap kali.
-- Mapping SEMUA 11 instrumen daripada v2.3 dikekalkan.
+AUTO TETAP:
+Nama Sekolah: SEKOLAH KEBANGSAAN SUNGAI ABONG
+Kod Sekolah : JBA5095
 
-SEMUA INSTRUMEN DIMAPPING
-PBD-A, PBD-B, PBD-C
-PPsi-A, PPsi-B, PPsi-C
-PAJSK-A, PAJSK-B
-SEGAK-A, SEGAK-B, SEGAK-C
+PERUBAHAN
+- Semua instrumen yang mempunyai ruangan Nama Sekolah akan diisi automatik.
+- Semua instrumen yang mempunyai ruangan Kod Sekolah akan diisi automatik.
+- Medan ini read-only dalam webapp supaya pengguna tidak boleh tersalah ejaan/kod.
+- PDF rasmi KPM sentiasa menggunakan nilai rasmi ini, walaupun metadata submission lama kosong/berbeza.
+- PBD/PPsi/PAJSK/SEGAK mapping v2.5 dikekalkan.
+- Field individu seperti Mata Pelajaran, Tahun/Tingkatan, Unit Kokurikulum, skop SEGAK dan peranan masih diisi oleh pemilik kerana nilainya tidak sama untuk semua.
 
 DEPLOY
 Upload SEMUA kandungan ZIP ke root repo GitHub/Vercel.
-Selepas deployment siap, buat Ctrl+Shift+R sebelum uji Muat Turun PDF.
+Selepas Vercel siap deploy, buat Ctrl+Shift+R.
