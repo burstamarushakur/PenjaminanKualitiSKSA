@@ -1,33 +1,14 @@
-PENJAMINAN KUALITI SKSA - NEON v3.0 OFFICIAL KPM PDF AUDIT
+PENJAMINAN KUALITI SKSA - NEON v3.1 SEGAK CHECKBOX EXACT BOX CENTRES
 
-SUMBER
-- Webapp kini menggunakan TERUS fail rasmi KPM yang dibundel:
-  /assets/kpm-pbs-official.pdf
-- Fail ini ialah PDF 62 halaman yang dibekalkan pengguna dan diaudit keseluruhannya.
-
-HASIL AUDIT 62 HALAMAN
-- 246 baris standard berjaya dibaca daripada jadual rasmi.
-- Tiga baris SEGAK-C Bahagian C (3.1, 3.2, 3.3) mempunyai lima petak skala
-  tetapi angka 1-5 TIDAK dicetak dalam PDF asal KPM.
-  Sistem kini mengisi angka 1-5 pada petak tersebut dan membulatkan jawapan.
-- PBD-B Bahagian C 4.1 dalam PDF asal tercetak "1 2 3 4 4".
-  Sistem membetulkan sel terakhir kepada "5".
-- SEGAK-B Bahagian C 2.3 mempunyai dua subitem (i) individu dan (ii) kumpulan
-  dalam satu baris visual. Kedua-duanya dimapping secara berasingan.
-- Ya/Tidak kekal ditanda √ dalam petak kosong yang betul.
-- Skala 1-5 menggunakan geometri kolum, bukan bergantung kepada teks angka pada baris itu.
-
-SELF AUDIT
-- PDF tidak akan dimuat turun jika satu item gagal dimapping.
-- PDF tidak akan dimuat turun jika jawapan lama tidak sepadan dengan jenis respons semasa.
-- Jadi sistem tidak lagi senyap-senyap menghasilkan borang separuh lengkap.
-
-NOTA SEGAK-C
-- Item C 3.1, 3.2, 3.3 kini ditetapkan sebagai SKALA_1_5.
-- Submission lama yang menjawab YA/TIDAK perlu KEMASKINI dan pilih skala 1-5
-  untuk tiga item itu sahaja. Jawapan item lain kekal.
+FIX KHUSUS BERDASARKAN PDF RASMI KPM YANG DIBUNDLED
+- Checkbox JAWATAN SEGAK-A/B/C sekarang ditanda tepat di TENGAH kotak rasmi.
+- Checkbox SKOP SEGAK/BMI (SM, SR, BMI SR, Prasekolah, PPKI) sekarang ditanda tepat
+  di TENGAH kolum checkbox paling kanan.
+- Posisi tidak lagi dikira berdasarkan perkataan/label. Koordinat diambil terus daripada
+  geometri kotak dalam PDF rasmi KPM 62 halaman yang dibekalkan pengguna.
+- Semua pembetulan v3.0 kekal: full-answer audit, SEGAK-C 3.1-3.3 skala 1-5,
+  PBD-B C4.1 typo repair, Ya/Tidak dalam petak, metadata audit, PDF rasmi bundled.
 
 DEPLOY
-Upload SEMUA kandungan ZIP ke root repo GitHub/Vercel.
-Pastikan folder assets/ turut naik.
+Upload SEMUA kandungan ZIP ke root repo GitHub/Vercel, termasuk folder assets/.
 Selepas deploy: Ctrl+Shift+R.

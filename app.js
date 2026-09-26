@@ -1365,6 +1365,75 @@ function drawVectorCheck(page,x,y,size=7,color){
   page.drawLine({start:{x:x-size*0.12,y:y-size*0.42},end:{x:x+size*0.65,y:y+size*0.48},thickness:1.6,color});
 }
 
+
+const SEGAK_HEADER_BOXES = Object.freeze({
+  'SEGAK-A': {
+    roles: {
+      'PENGETUA': {x:177.54,y:219.52},
+      'GURU BESAR': {x:285.54,y:219.52},
+      'GURU PENOLONG KANAN PENTADBIRAN': {x:390.54,y:219.72}
+    },
+    scope: {
+      'SEGAK_SM': {x:744.94,y:511.36},
+      'SEGAK_SR': {x:744.94,y:497.08},
+      'BMI_SR': {x:744.94,y:482.80},
+      'BMI_PRASEKOLAH': {x:744.94,y:468.52},
+      'BMI_PPKI': {x:744.94,y:454.24}
+    }
+  },
+  'SEGAK-B': {
+    roles: {
+      'GURU KANAN MATA PELAJARAN': {x:177.54,y:218.60},
+      'KETUA PANITIA': {x:390.54,y:218.92}
+    },
+    scope: {
+      'SEGAK_SM': {x:744.94,y:514.36},
+      'SEGAK_SR': {x:744.94,y:500.08},
+      'BMI_SR': {x:744.94,y:485.80},
+      'BMI_PRASEKOLAH': {x:744.94,y:471.52},
+      'BMI_PPKI': {x:744.94,y:457.24}
+    }
+  },
+  'SEGAK-C': {
+    roles: {
+      'GMP PJPK': {x:177.54,y:220.56},
+      'GURU PRASEKOLAH': {x:350.58,y:220.86},
+      'GURU PPKI': {x:509.04,y:220.08}
+    },
+    scope: {
+      'SEGAK_SM': {x:744.94,y:514.36},
+      'SEGAK_SR': {x:744.94,y:500.08},
+      'BMI_SR': {x:744.94,y:485.80},
+      'BMI_PRASEKOLAH': {x:744.94,y:471.52},
+      'BMI_PPKI': {x:744.94,y:457.24}
+    }
+  }
+});
+
+function stampSegakHeaderCheckboxes(outPage,instrumentId,meta,color){
+  const map=SEGAK_HEADER_BOXES[instrumentId];
+  if(!map) return {role:false,scope:false};
+
+  let role=false;
+  const roleKey=String(meta.role_option||'').trim().toUpperCase();
+  const rolePt=map.roles[roleKey];
+  if(rolePt){
+    drawVectorCheck(outPage,rolePt.x,rolePt.y,7.2,color);
+    role=true;
+  }
+
+  const scopes=new Set(Array.isArray(meta.scope)?meta.scope:[]);
+  let marked=0;
+  for(const key of scopes){
+    const pt=map.scope[key];
+    if(!pt) continue;
+    drawVectorCheck(outPage,pt.x,pt.y,7.2,color);
+    marked++;
+  }
+
+  return {role,scope:scopes.size>0 && marked===scopes.size};
+}
+
 function markTextChoice(pageInfo,outPage,labels,color,side='left'){
   const target=findLabel(pageInfo,labels);
   if(!target) return false;
@@ -1562,35 +1631,11 @@ async function stampOfficialKpmPdf(detail){
     putAfter(['2. KOD SEKOLAH:','2. KOD SEKOLAH :','KOD SEKOLAH:','KOD SEKOLAH :','KOD SEKOLAH'],window.PK_CONFIG.SCHOOL_CODE||'JBA5095',{key:'school_code',maxWidth:140});
     putAfter(['3. NAMA GURU:','3. NAMA GURU :','NAMA GURU:','NAMA GURU :','NAMA GURU','3. NAMA:','3. NAMA :'],sub.staff_name||'',{key:'name',maxWidth:330});
 
-    const roleMap={
-      'PENGETUA':['PENGETUA'],
-      'GURU BESAR':['GURU BESAR'],
-      'GURU PENOLONG KANAN PENTADBIRAN':['GURU PENOLONG KANAN PENTADBIRAN','PENOLONG KANAN PENTADBIRAN'],
-      'GURU KANAN MATA PELAJARAN':['GURU KANAN MATA PELAJARAN'],
-      'KETUA PANITIA':['KETUA PANITIA'],
-      'GMP PJPK':['GMP PJPK'],
-      'GURU PRASEKOLAH':['GURU PRASEKOLAH'],
-      'GURU PPKI':['GURU PPKI']
-    };
-    if(meta.role_option){
-      const roleOk=markTextChoice(firstInfo,firstOut,roleMap[meta.role_option]||[meta.role_option],black,'left');
-      if(roleOk) stampAudit.role_option=true;
-    }
-
-    // Jadual skop di bahagian atas: SEGAK (SM/SR), BMI 5-9T (SR/Prasekolah/PPKI).
-    const scopes=new Set(Array.isArray(meta.scope)?meta.scope:[]);
-    const sm=allExactText(firstInfo,'SM');
-    const sr=allExactText(firstInfo,'SR');
-    const pra=allExactText(firstInfo,'Prasekolah');
-    const ppki=allExactText(firstInfo,'PPKI');
-    const markRight=t=>{if(!t)return;drawVectorCheck(firstOut,t.x+t.w+10,t.y+Math.max(t.h,8)*0.35,6,black)};
-    let scopeMarks=0;
-    if(scopes.has('SEGAK_SM') && sm[0]){markRight(sm[0]);scopeMarks++;}
-    if(scopes.has('SEGAK_SR') && sr[0]){markRight(sr[0]);scopeMarks++;}
-    if(scopes.has('BMI_SR') && sr[1]){markRight(sr[1]);scopeMarks++;}
-    if(scopes.has('BMI_PRASEKOLAH') && pra[0]){markRight(pra[0]);scopeMarks++;}
-    if(scopes.has('BMI_PPKI') && ppki[0]){markRight(ppki[0]);scopeMarks++;}
-    if(scopes.size>0 && scopeMarks===scopes.size) stampAudit.scope=true;
+    // SEGAK mempunyai kotak checkbox sebenar pada halaman pertama.
+    // Jangan lagi kira posisi berdasarkan teks; guna pusat kotak rasmi PDF KPM.
+    const segakChecks=stampSegakHeaderCheckboxes(firstOut,instrumentId,meta,black);
+    if(segakChecks.role) stampAudit.role_option=true;
+    if(segakChecks.scope) stampAudit.scope=true;
   }else{
     putAfter(['1. NAMA:','1. NAMA :','NAMA:','NAMA :','NAMA'],sub.staff_name||'',{key:'name',maxWidth:340});
     putAfter(['2. JAWATAN:','2. JAWATAN :','JAWATAN:','JAWATAN :','JAWATAN'],sub.job_title||sub.target_role||'',{key:'job_title',maxWidth:250});
