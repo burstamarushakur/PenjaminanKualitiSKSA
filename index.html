@@ -4,13 +4,36 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Penjaminan Kualiti PBS</title>
-  <meta name="theme-color" content="#0f172a" />
-  <link rel="stylesheet" href="./styles.css" />
+  <meta name="theme-color" content="#07142f" />
+  <style>
+    html,body{margin:0;min-height:100%;background:#f5f7fb}
+    #bootSplash{position:fixed;inset:0;z-index:20000;display:grid;place-items:center;background:#07142f;font-family:Arial,sans-serif;color:#fff;transition:opacity .18s ease}
+    #bootSplash.hide{opacity:0;pointer-events:none}
+    .bootBox{display:grid;justify-items:center;gap:14px}
+    .bootOrbit{position:relative;width:150px;height:150px;display:grid;place-items:center}
+    .bootRing{position:absolute;border-radius:50%;border:2px solid transparent}
+    .bootRing.a{inset:0;border-right-color:#58d9ff;border-left-color:#bd59ff;animation:br1 1.4s linear infinite}
+    .bootRing.b{inset:16px;border-top-color:#ff7b5a;border-bottom-color:#5aa8ff;animation:br2 1s linear infinite}
+    .bootLogoWrap{width:76px;height:76px;border-radius:50%;display:grid;place-items:center;background:#fff;box-shadow:0 0 28px rgba(80,194,255,.45)}
+    .bootLogo{width:58px;height:58px;object-fit:contain}
+    .bootText{font-weight:700;letter-spacing:.02em}
+    @keyframes br1{to{transform:rotate(360deg)}}@keyframes br2{to{transform:rotate(-360deg)}}
+  </style>
+  <link rel="stylesheet" href="./styles.css?v=1.7.0" />
 </head>
 <body>
+  <div id="bootSplash">
+    <div class="bootBox">
+      <div class="bootOrbit">
+        <div class="bootRing a"></div><div class="bootRing b"></div>
+        <div class="bootLogoWrap"><img class="bootLogo" src="https://i.postimg.cc/3RF9M05N/Logo-SKSA.png" alt="Logo SKSA"></div>
+      </div>
+      <div class="bootText">Memuatkan Sistem…</div>
+    </div>
+  </div>
   <div id="toast"></div>
   <div id="app"></div>
-  <script src="./config.js"></script>
-  <script src="./app.js"></script>
+  <script src="./config.js?v=1.7.0"></script>
+  <script src="./app.js?v=1.7.0"></script>
 </body>
 </html>

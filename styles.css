@@ -125,3 +125,6 @@ button:disabled{opacity:.65;cursor:wait}
 @keyframes spinB{to{transform:rotate(-360deg)}}
 @keyframes orbitSpark1{0%{transform:rotate(0deg) translateY(-78px) rotate(0deg)}100%{transform:rotate(360deg) translateY(-78px) rotate(-360deg)}}
 @keyframes orbitSpark2{0%{transform:rotate(0deg) translateY(-56px) rotate(0deg)}100%{transform:rotate(-360deg) translateY(-56px) rotate(360deg)}}
+
+.loader-logo-wrap,.bootLogoWrap{position:relative}
+.loader-logo-wrap::after,.bootLogoWrap::after{content:'SKSA';position:absolute;inset:0;display:grid;place-items:center;font-weight:900;font-size:13px;color:#0f3d73;z-index:-1}

@@ -1,10 +1,21 @@
 
 const API = window.PK_CONFIG.API_URL;
+
+function safeStoredJson(key,fallback){
+  try{
+    const raw=localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  }catch(_){
+    localStorage.removeItem(key);
+    return fallback;
+  }
+}
+
 const state = {
   token: localStorage.getItem('pk_token') || '',
-  user: JSON.parse(localStorage.getItem('pk_user') || 'null'),
+  user: safeStoredJson('pk_user',null),
   boot: null,
-  assignments: JSON.parse(localStorage.getItem('pk_assignments') || '[]'),
+  assignments: safeStoredJson('pk_assignments',[]),
   route: 'assignments',
   currentAssignment: null,
   currentSubmission: null,
@@ -20,6 +31,13 @@ const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 function toast(msg){
   const el=document.createElement('div'); el.className='toast'; el.textContent=msg;
   $('#toast').appendChild(el); setTimeout(()=>el.remove(),3500);
+}
+
+function dismissBootSplash(){
+  const el=document.getElementById('bootSplash');
+  if(!el) return;
+  el.classList.add('hide');
+  setTimeout(()=>el.remove(),220);
 }
 
 function ensureLoader(){
@@ -60,22 +78,43 @@ function hideLoader(){
   if(el) el.classList.add('hidden');
 }
 
-async function get(action, params={}, opts={}){
-  const u=new URL(API);
-  u.searchParams.set('action',action);
-  if(state.token) u.searchParams.set('token',state.token);
-  Object.entries(params).forEach(([k,v])=>v!==undefined&&v!==null&&u.searchParams.set(k,v));
-  const r=await fetch(u,{redirect:'follow'});
-  return r.json();
+async function fetchJson_(url,options={},timeoutMs=20000){
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),timeoutMs);
+  try{
+    const r=await fetch(url,{...options,signal:controller.signal,cache:'no-store'});
+    return await r.json();
+  }finally{
+    clearTimeout(timer);
+  }
 }
 
-async function post(action,payload={}){
-  const r=await fetch(API,{
-    method:'POST',
-    headers:{'Content-Type':'text/plain;charset=utf-8'},
-    body:JSON.stringify({action,token:state.token,payload})
-  });
-  return r.json();
+async function get(action, params={}, opts={}){
+  const {loading=false,title='Memuatkan Sistem…',desc='Sila tunggu sebentar.'}=opts||{};
+  if(loading) showLoader(title,desc);
+  try{
+    const u=new URL(API);
+    u.searchParams.set('action',action);
+    if(state.token) u.searchParams.set('token',state.token);
+    Object.entries(params).forEach(([k,v])=>v!==undefined&&v!==null&&u.searchParams.set(k,v));
+    return await fetchJson_(u,{redirect:'follow'});
+  }finally{
+    if(loading) hideLoader();
+  }
+}
+
+async function post(action,payload={},opts={}){
+  const {loading=false,title='Memuatkan Sistem…',desc='Sila tunggu sebentar.'}=opts||{};
+  if(loading) showLoader(title,desc);
+  try{
+    return await fetchJson_(API,{
+      method:'POST',
+      headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body:JSON.stringify({action,token:state.token,payload})
+    });
+  }finally{
+    if(loading) hideLoader();
+  }
 }
 
 function setSession(data){
@@ -94,22 +133,25 @@ function logout(){
 }
 
 async function start(){
-  // SPEED: UI muncul terus. Jangan tunggu Apps Script health check.
-  if(!state.token || !state.user){
-    renderLogin();
-    return;
+  try{
+    if(!state.token || !state.user){
+      renderLogin();
+      requestAnimationFrame(dismissBootSplash);
+      return;
+    }
+
+    state.route='assignments';
+    renderShell();
+    requestAnimationFrame(dismissBootSplash);
+
+    refreshAssignments(true).catch(()=>{
+      logout();
+    });
+  }catch(err){
+    console.error(err);
+    renderFatal('Ralat memulakan sistem. Sila refresh semula.');
+    dismissBootSplash();
   }
-
-  // Jika pernah login, shell + tugasan cache dipaparkan serta-merta.
-  showLoader('Memuatkan Sistem…','Menyediakan paparan anda.');
-  state.route='assignments';
-  renderShell();
-  hideLoader();
-
-  // Semak token / refresh tugasan di belakang.
-  refreshAssignments(true).catch(()=>{
-    logout();
-  });
 }
 
 async function loadBoot(){
@@ -140,6 +182,7 @@ async function renderLogin(){
       </form>
     </div>
   </div>`;
+  dismissBootSplash();
 
   const icInput=$('#ic');
   icInput.oninput=()=>{
@@ -587,3 +630,5 @@ function modal(inner){
 function closeModal(){ $('#modal')?.remove(); }
 
 start();
+
+setTimeout(()=>{ if(document.getElementById('bootSplash')) dismissBootSplash(); }, 2500);
