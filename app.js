@@ -429,14 +429,27 @@ function title(t){ $('#pageTitle').textContent=t; }
 async function viewDashboard(){
   title('Dashboard');
   if(!state.boot) await loadBoot();
-  const d=await get('dashboard');
+
+  $('#view').innerHTML=`<div class="card loading-card"><div class="spinner"></div><b>Memuatkan dashboard dan senarai semak…</b></div>`;
+
+  const [d,staffOut,assignOut]=await Promise.all([
+    get('dashboard'),
+    get('staff'),
+    get('admin_assignments')
+  ]);
+
   const s=d.stats||{};
+  const staff=staffOut.staff||[];
+  const assignments=assignOut.assignments||[];
+  const checklist=buildCompletionChecklist(staff,assignments);
+
   $('#view').innerHTML=`<div class="grid grid4">
     ${stat('Tugasan',s.assignments||0,'adminAssignments')}
     ${stat('Selesai',s.submitted||0,'submissions','SUBMITTED')}
     ${stat('Draf',s.draft||0,'submissions','DRAFT')}
     ${stat('Tindakan Susulan',s.open_followups||0,'followups')}
   </div>
+
   <div class="section-title"><h2>Sesi Aktif</h2></div>
   <div class="card dashboard-session" data-dashboard-route="settings">
     <b>${esc(state.boot.active_session?.nama||state.boot.active_session?.name||'-')}</b>
@@ -445,19 +458,48 @@ async function viewDashboard(){
       <button class="btn btn-primary" id="openMyInstruments">Buka Instrumen Saya</button>
       <span class="muted">Klik kad sesi untuk buka Tahun / Tetapan.</span>
     </div>
+  </div>
+
+  <div class="section-title checklist-heading">
+    <div>
+      <h2>Senarai Semak Pengisian Instrumen</h2>
+      <p class="muted">Status SELESAI hanya apabila semua instrumen yang ditugaskan kepada guru telah dihantar.</p>
+    </div>
+  </div>
+
+  <div class="grid checklist-summary">
+    <div class="card checklist-mini"><span>Jumlah Guru</span><strong>${checklist.length}</strong></div>
+    <div class="card checklist-mini ok"><span>Selesai</span><strong>${checklist.filter(x=>x.overall==='SELESAI').length}</strong></div>
+    <div class="card checklist-mini warn"><span>Belum Selesai</span><strong>${checklist.filter(x=>x.overall==='BELUM SELESAI').length}</strong></div>
+    <div class="card checklist-mini gray"><span>Tiada Tugasan</span><strong>${checklist.filter(x=>x.overall==='TIADA TUGASAN').length}</strong></div>
+  </div>
+
+  <div class="card checklist-card">
+    <div class="checklist-toolbar">
+      <input id="checklistSearch" placeholder="Cari nama guru…" autocomplete="off">
+      <select id="checklistFilter">
+        <option value="ALL">Semua Status</option>
+        <option value="BELUM SELESAI">Belum Selesai</option>
+        <option value="SELESAI">Selesai</option>
+        <option value="TIADA TUGASAN">Tiada Tugasan</option>
+      </select>
+    </div>
+    <div class="table-wrap checklist-table-wrap">
+      <table class="checklist-table">
+        <thead><tr><th>Nama Guru</th><th>Instrumen Ditugaskan</th><th>Siap</th><th>Status</th><th></th></tr></thead>
+        <tbody id="checklistBody"></tbody>
+      </table>
+    </div>
   </div>`;
 
-  $$('[data-dashboard-route]').forEach(el=>el.onclick=e=>{
-    // Hanya abaikan klik butang "Buka Instrumen Saya" yang berada dalam kad Sesi.
-    // Kad statistik sendiri ialah <button>, jadi jangan tapis semua button.
-    if(e.target.closest('#openMyInstruments')) return;
+  renderCompletionChecklist(checklist);
 
+  $$('[data-dashboard-route]').forEach(el=>el.onclick=e=>{
+    if(e.target.closest('#openMyInstruments')) return;
     const route=el.dataset.dashboardRoute;
     const filter=el.dataset.dashboardFilter||'ALL';
-
     if(route==='submissions') state.submissionFilter=filter;
     else state.submissionFilter='ALL';
-
     go(route);
   });
 
@@ -465,6 +507,108 @@ async function viewDashboard(){
     e.stopPropagation();
     go('assignments');
   };
+
+  $('#checklistSearch').oninput=()=>renderCompletionChecklist(checklist);
+  $('#checklistFilter').onchange=()=>renderCompletionChecklist(checklist);
+}
+
+function buildCompletionChecklist(staff,assignments){
+  const byStaff=new Map();
+  for(const a of assignments){
+    if(!byStaff.has(a.staff_id)) byStaff.set(a.staff_id,[]);
+    byStaff.get(a.staff_id).push(a);
+  }
+
+  return staff.map(st=>{
+    const staffId=st.staff_id;
+    const rows=(byStaff.get(staffId)||[]).slice().sort((a,b)=>String(a.instrument_id).localeCompare(String(b.instrument_id)));
+    const total=rows.length;
+    const done=rows.filter(a=>a.submission_status==='SUBMITTED').length;
+    const overall=total===0?'TIADA TUGASAN':done===total?'SELESAI':'BELUM SELESAI';
+
+    return {
+      staff_id:staffId,
+      name:st.nama||st.name||'-',
+      job_title:st.jawatan_hakiki||st.job_title||'',
+      total,done,overall,
+      assignments:rows
+    };
+  }).sort((a,b)=>{
+    const rank={'BELUM SELESAI':0,'TIADA TUGASAN':1,'SELESAI':2};
+    return (rank[a.overall]-rank[b.overall]) || a.name.localeCompare(b.name);
+  });
+}
+
+function renderCompletionChecklist(rows){
+  const body=$('#checklistBody');
+  if(!body) return;
+
+  const q=($('#checklistSearch')?.value||'').trim().toLowerCase();
+  const filter=$('#checklistFilter')?.value||'ALL';
+
+  const visible=rows.filter(r=>{
+    if(q && !r.name.toLowerCase().includes(q)) return false;
+    if(filter!=='ALL' && r.overall!==filter) return false;
+    return true;
+  });
+
+  body.innerHTML=visible.length?visible.map(r=>{
+    const instrumentList=r.assignments.length
+      ? r.assignments.map(a=>esc(a.instrument_id)).join(', ')
+      : '—';
+    const statusClass=r.overall==='SELESAI'?'ok':r.overall==='BELUM SELESAI'?'warn':'gray';
+
+    return `<tr class="checklist-row" data-check-staff="${esc(r.staff_id)}">
+      <td><b>${esc(r.name)}</b>${r.job_title?`<small>${esc(r.job_title)}</small>`:''}</td>
+      <td>${instrumentList}</td>
+      <td><b>${r.done}/${r.total}</b></td>
+      <td><span class="badge ${statusClass}">${esc(r.overall)}</span></td>
+      <td><button class="btn btn-light checklist-detail-btn" data-check-detail="${esc(r.staff_id)}">Lihat</button></td>
+    </tr>
+    <tr class="checklist-detail hidden" data-check-panel="${esc(r.staff_id)}">
+      <td colspan="5">${renderChecklistDetail(r)}</td>
+    </tr>`;
+  }).join(''):`<tr><td colspan="5" class="muted">Tiada rekod sepadan.</td></tr>`;
+
+  $$('[data-check-detail]').forEach(btn=>btn.onclick=e=>{
+    e.stopPropagation();
+    toggleChecklistDetail(btn.dataset.checkDetail);
+  });
+  $$('[data-check-staff]').forEach(row=>row.onclick=()=>toggleChecklistDetail(row.dataset.checkStaff));
+  $$('[data-check-pdf]').forEach(btn=>btn.onclick=e=>{
+    e.stopPropagation();
+    downloadSubmissionPdf(btn.dataset.checkPdf);
+  });
+}
+
+function renderChecklistDetail(row){
+  if(!row.assignments.length){
+    return `<div class="checklist-empty muted">Guru ini belum ditugaskan sebarang instrumen bagi sesi aktif.</div>`;
+  }
+
+  return `<div class="checklist-detail-grid">
+    ${row.assignments.map(a=>{
+      const st=a.submission_status||'BELUM MULA';
+      const cls=st==='SUBMITTED'?'ok':st==='DRAFT'?'warn':'gray';
+      const label=st==='SUBMITTED'?'SELESAI':st==='DRAFT'?'DRAF':'BELUM MULA';
+
+      return `<div class="checklist-instrument">
+        <div>
+          <b>${esc(a.instrument_id)}</b>
+          <small>${esc(a.instrument_title||'')}</small>
+        </div>
+        <div class="toolbar">
+          <span class="badge ${cls}">${label}</span>
+          ${st==='SUBMITTED'&&a.submission_id?`<button class="btn btn-light" data-check-pdf="${esc(a.submission_id)}">Muat Turun PDF</button>`:''}
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+function toggleChecklistDetail(staffId){
+  const panel=$(`[data-check-panel="${CSS.escape(staffId)}"]`);
+  if(panel) panel.classList.toggle('hidden');
 }
 
 function stat(label,value,route,filter='ALL'){
