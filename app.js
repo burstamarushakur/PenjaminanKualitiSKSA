@@ -341,7 +341,7 @@ async function renderLogin(){
         <div>
           <label>No. Kad Pengenalan</label>
           <input id="ic" inputmode="numeric" autocomplete="off" maxlength="14"
-                 placeholder="Contoh: 850110045025" required>
+                 placeholder="Contoh: 122333014444" required>
         </div>
         <button class="btn btn-primary" type="submit">Masuk</button>
       </form>
